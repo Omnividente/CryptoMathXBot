@@ -1,0 +1,75 @@
+name: Независимый AI-аудит
+description: Доказательная находка независимого рецензента
+title: "[Audit] "
+labels: ["audit", "needs-evidence"]
+body:
+  - type: dropdown
+    id: role
+    attributes:
+      label: Роль аудитора
+      options:
+        - Reliability
+        - Security
+        - Telegram UX
+        - Performance
+        - Data integrity
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - P0 — потеря данных, секретов или полный отказ
+        - P1 — неверный основной результат или частый отказ
+        - P2 — ограниченный сбой или существенная деградация
+        - P3 — косметика или улучшение
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Файл и символ/строки
+      placeholder: src/cryptomathxbot/market.py:MarketService.quotes
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Доказательство и достижимый сценарий
+      description: Почему ветка выполняется, точный вход и наблюдаемый эффект.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Нарушенный контракт
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Минимальное исправление
+    validations:
+      required: true
+  - type: textarea
+    id: regression
+    attributes:
+      label: Регрессионная проверка
+      description: Проверка должна падать до исправления и проходить после него.
+    validations:
+      required: true
+  - type: textarea
+    id: independence
+    attributes:
+      label: Независимость проверки
+      description: Что видел аудитор и почему это независимый запуск.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Приватность
+      options:
+        - label: Отчёт не содержит токенов, SQLite, user/chat ID или приватных сообщений.
+          required: true

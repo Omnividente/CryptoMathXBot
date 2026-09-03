@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: python -m pip install --disable-pip-version-check ".[dev]"
+      - name: Verify Windows dependency lock
+        if: runner.os == 'Windows' && matrix.python-version == '3.10'
+        shell: pwsh
+        run: |
+          python -m piptools compile --generate-hashes --reuse-hashes --strip-extras --resolver=backtracking --index-url=https://pypi.org/simple --output-file=requirements-windows.txt pyproject.toml
+          git diff --exit-code -- requirements-windows.txt
+      - name: Test
+        run: python -m pytest --cov=cryptomathxbot --cov-report=term-missing
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install
+        run: python -m pip install --disable-pip-version-check ".[dev]"
+      - name: Ruff
+        run: python -m ruff check .
+      - name: Mypy
+        run: python -m mypy
+      - name: Dependency audit
+        run: python -m pip_audit .
+      - name: Bootstrap dependency audit
+        run: python -m pip_audit -r requirements-bootstrap.txt
+      - name: Build
+        run: python -m pip wheel --no-deps --wheel-dir dist .

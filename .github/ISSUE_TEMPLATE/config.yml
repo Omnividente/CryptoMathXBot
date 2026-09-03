@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Приватный отчёт об уязвимости
+    url: https://github.com/Omnividente/CryptoMathXBot/security/advisories/new
+    about: Не публикуйте эксплуатацию, токены и пользовательские данные в обычном issue.

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cryptomathxbot"
+version = "2.0.0"
+description = "Telegram cryptocurrency calculator with live prices and charts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Omnividente" }]
+dependencies = [
+  "defusedxml==0.7.1",
+  "httpx[http2]==0.28.1",
+  "matplotlib==3.10.9",
+  "python-telegram-bot[http2,rate-limiter]==22.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy==2.3.1",
+  "pip-audit==2.10.1",
+  "pip-tools==7.6.1",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-cov==7.1.0",
+  "ruff==0.16.5",
+]
+
+[project.scripts]
+cryptomathxbot = "cryptomathxbot.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cryptomathxbot"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --strict-config"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/cryptomathxbot"]
+disable_error_code = ["import-untyped"]
+warn_unused_ignores = true
+
+[tool.coverage.run]
+branch = true
+source = ["cryptomathxbot"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 60

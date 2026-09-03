@@ -1,0 +1,67 @@
+name: Ошибка
+description: Воспроизводимый дефект CryptoMathXBot
+title: "[Bug] "
+labels: ["bug", "needs-evidence"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не публикуйте токены, user/chat ID, SQLite или приватные сообщения.
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Минимальный сценарий
+      description: Точные команды, сообщение или callback и начальное состояние.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактический результат
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемый результат
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      placeholder: v2.0.0 / commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Режим Telegram
+      options:
+        - Личный чат
+        - Группа или супергруппа
+        - Тема группы
+        - Inline mode
+        - Запуск/остановка
+        - Внешний API
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Среда
+      description: ОС, версия Python, сеть/прокси, источник цены; без секретов.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Обезличенные логи
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Проверка приватности
+      options:
+        - label: Я удалил токены, идентификаторы пользователей/чатов и содержимое приватных сообщений.
+          required: true
