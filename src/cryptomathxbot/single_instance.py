@@ -113,7 +113,7 @@ def _unlock_posix_file(handle: BinaryIO) -> None:
 
 
 def _acquire_windows_mutex(path: Path) -> int:
-    import ctypes
+    ctypes: Any = importlib.import_module("ctypes")
     from ctypes import wintypes
 
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -136,7 +136,7 @@ def _acquire_windows_mutex(path: Path) -> int:
 
 
 def _close_windows_mutex(handle: int) -> None:
-    import ctypes
+    ctypes: Any = importlib.import_module("ctypes")
     from ctypes import wintypes
 
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
