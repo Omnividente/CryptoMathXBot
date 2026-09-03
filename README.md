@@ -13,7 +13,7 @@
 - inline mode;
 - персональные избранные монеты в SQLite;
 - ограничение частоты запросов, ограничение параллелизма и защита от второго процесса;
-- приватные ответы в группах, где это поддерживает Bot API, с безопасным fallback.
+- приватные ответы в группах, где это поддерживает Bot API, без публичной публикации при ошибке;
 
 ## Требования
 
@@ -114,7 +114,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m mypy
 .\.venv\Scripts\python.exe -m pip_audit .
 .\.venv\Scripts\python.exe -m pip_audit -r requirements-bootstrap.txt
-.\.venv\Scripts\python.exe -m piptools compile --generate-hashes --reuse-hashes --strip-extras --resolver=backtracking --index-url=https://pypi.org/simple --output-file=requirements-windows.txt pyproject.toml
+.\.venv\Scripts\python.exe -m piptools compile --generate-hashes --reuse-hashes --strip-extras --no-header --resolver=backtracking --index-url=https://pypi.org/simple --output-file=requirements-windows.txt pyproject.toml
 ```
 
 Тесты используют mock transport и не требуют токена или реального Telegram API.
