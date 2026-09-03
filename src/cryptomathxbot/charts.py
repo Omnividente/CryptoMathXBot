@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+from datetime import datetime, timezone
 
 from .domain import Chart
 
@@ -18,11 +19,13 @@ class ChartRenderer:
 
 def _render_chart(chart: Chart, dpi: int) -> io.BytesIO:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
+    from matplotlib.dates import AutoDateLocator, ConciseDateFormatter, date2num
     from matplotlib.figure import Figure
     from matplotlib.ticker import FuncFormatter
-
-    timestamps = [point[0] / 86_400_000 for point in chart.points]
+    timestamps = [
+        date2num(datetime.fromtimestamp(point[0] / 1000, tz=timezone.utc))  # type: ignore[no-untyped-call]
+        for point in chart.points
+    ]
     prices = [point[1] for point in chart.points]
     change = ((prices[-1] / prices[0]) - 1) * 100 if prices[0] else 0.0
     line_color = "#16A34A" if change >= 0 else "#DC2626"

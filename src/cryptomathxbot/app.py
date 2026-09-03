@@ -1176,9 +1176,9 @@ async def _edit_result_media(
     *,
     receiver_user_id: int,
 ) -> None:
-    media = InputMediaPhoto(image, caption=caption, parse_mode=ParseMode.HTML)
     ephemeral_message_id = _ephemeral_message_id(message)
     if ephemeral_message_id is not None:
+        media = InputMediaPhoto(image, caption=caption, parse_mode=ParseMode.HTML)
         await bot.do_api_request(
             "edit_ephemeral_message_media",
             api_kwargs={
@@ -1191,6 +1191,7 @@ async def _edit_result_media(
         )
         return
     if message.photo:
+        media = InputMediaPhoto(image, caption=caption, parse_mode=ParseMode.HTML)
         await message.edit_media(media, reply_markup=reply_markup)
         return
     sent = await bot.send_photo(

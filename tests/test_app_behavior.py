@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -11,6 +12,7 @@ from telegram.error import BadRequest
 
 from cryptomathxbot.app import (
     _calculate,
+    _edit_result_media,
     _edit_result_message,
     _favorite_callback,
     _group_expression,
@@ -773,6 +775,43 @@ async def test_photo_refresh_rerenders_active_chart_and_keeps_selection() -> Non
     assert registry.get(session.token, 42).active_timeframe == "1h"
     assert "График BTC · 1 ч · изменение +1.00%" in calls[0][1]["media"].caption
 
+
+
+@pytest.mark.asyncio
+async def test_text_result_chart_upload_keeps_png_bytes_after_media_paths() -> None:
+    uploaded: list[bytes] = []
+
+    class Bot:
+        async def send_photo(self, **kwargs: Any) -> Any:
+            photo = kwargs["photo"]
+            uploaded.append(photo.read())
+            return SimpleNamespace(message_id=8)
+
+    deleted = False
+
+    async def delete() -> None:
+        nonlocal deleted
+        deleted = True
+
+    message = SimpleNamespace(
+        chat_id=123,
+        message_thread_id=None,
+        photo=None,
+        delete=delete,
+    )
+    image = BytesIO(b"\x89PNG\r\n\x1a\nchart")
+    image.name = "btc-1h.png"
+
+    await _edit_result_media(
+        Bot(),
+        message,
+        image,
+        "<b>График</b>",
+        None,
+        receiver_user_id=42,
+    )
+
+    assert uploaded == [b"\x89PNG\r\n\x1a\nchart"]
 
 @pytest.mark.asyncio
 async def test_favorites_command_does_not_bypass_query_rate_limit() -> None:
