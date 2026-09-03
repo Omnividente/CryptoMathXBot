@@ -1027,16 +1027,12 @@ async def _send_html(
             )
 
     api_kwargs = None
-    protected_ephemeral = False
     if ephemeral and user is not None and _is_group(update):
         parameters: dict[str, Any] = {"receiver_user_id": user.id}
         if query is not None and callback_query_response:
             parameters["callback_query_id"] = query.id
             if ephemeral_message_id is None:
                 parameters["replace_callback_query_message"] = True
-        protected_ephemeral = ephemeral_message_id is not None or (
-            query is not None and callback_query_response
-        )
         api_kwargs = {"ephemeral_message_parameters": parameters}
 
     kwargs = {
@@ -1049,19 +1045,13 @@ async def _send_html(
         "reply_markup": reply_markup,
         "api_kwargs": api_kwargs,
     }
-
-
     try:
         return await context.bot.send_message(**kwargs)
     except BadRequest:
-        if api_kwargs is None or protected_ephemeral:
+        if api_kwargs is None:
             raise
-        kwargs["api_kwargs"] = None
-        if reply_markup is not None:
-            kwargs["text"] = "Личные настройки доступны в личном чате с ботом."
-            kwargs["reply_markup"] = None
-        _LOGGER.info("ephemeral message unavailable; using neutral public reply")
-        return await context.bot.send_message(**kwargs)
+        _LOGGER.info("ephemeral message unavailable; refusing public fallback")
+        raise
 
 
 async def _edit_ephemeral_text(

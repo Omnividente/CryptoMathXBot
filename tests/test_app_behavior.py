@@ -91,52 +91,46 @@ def test_group_query_requires_explicit_invocation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ephemeral_group_response_falls_back_when_unsupported() -> None:
+async def test_ephemeral_group_response_refuses_public_fallback() -> None:
     calls: list[dict[str, Any]] = []
 
     class Bot:
         async def send_message(self, **kwargs: Any) -> Any:
             calls.append(kwargs)
-            if kwargs.get("api_kwargs"):
-                raise BadRequest("ephemeral messages unavailable")
-            return SimpleNamespace(message_id=10)
+            raise BadRequest("ephemeral messages unavailable")
 
     update = update_with_text("/settings")
     context = SimpleNamespace(bot=Bot())
 
-    result = await _send_html(update, context, "settings", ephemeral=True)
+    with pytest.raises(BadRequest):
+        await _send_html(update, context, "settings", ephemeral=True)
 
-    assert result.message_id == 10
     assert calls[0]["api_kwargs"]["ephemeral_message_parameters"]["receiver_user_id"] == 42
-    assert calls[1]["api_kwargs"] is None
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_ephemeral_interactive_fallback_does_not_publish_personal_screen() -> None:
+async def test_ephemeral_interactive_response_never_publishes_personal_screen() -> None:
     calls: list[dict[str, Any]] = []
 
     class Bot:
         async def send_message(self, **kwargs: Any) -> Any:
             calls.append(kwargs)
-            if kwargs.get("api_kwargs"):
-                raise BadRequest("ephemeral messages unavailable")
-            return SimpleNamespace(message_id=11)
+            raise BadRequest("ephemeral messages unavailable")
 
     update = update_with_text("/favorites")
     context = SimpleNamespace(bot=Bot())
-    keyboard = object()
 
-    result = await _send_html(
-        update,
-        context,
-        "личный список BTC",
-        reply_markup=keyboard,
-        ephemeral=True,
-    )
+    with pytest.raises(BadRequest):
+        await _send_html(
+            update,
+            context,
+            "личный список BTC",
+            reply_markup=object(),
+            ephemeral=True,
+        )
 
-    assert result.message_id == 11
-    assert calls[1]["text"] == "Личные настройки доступны в личном чате с ботом."
-    assert calls[1]["reply_markup"] is None
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
