@@ -90,8 +90,6 @@ def test_group_query_requires_explicit_mention() -> None:
     assert _group_expression(context, "BTC") == ""
 
 
-
-
 @pytest.mark.asyncio
 async def test_ephemeral_group_response_refuses_public_fallback() -> None:
     calls: list[dict[str, Any]] = []
@@ -220,7 +218,6 @@ def test_main_reports_invalid_configuration_without_traceback(
     assert exc_info.value.code == 2
     assert "Ошибка конфигурации" in captured.err
     assert "Traceback" not in captured.err
-
 
 
 @pytest.mark.asyncio
@@ -359,6 +356,7 @@ async def test_edit_ephemeral_photo_uses_new_text_message_then_deletes_old_photo
 @pytest.mark.asyncio
 async def test_incomplete_ephemeral_media_replacement_keeps_original() -> None:
     delete_calls = 0
+    invalid_replacement_deleted = False
 
     class MessageLike:
         photo = (object(),)
@@ -366,9 +364,16 @@ async def test_incomplete_ephemeral_media_replacement_keeps_original() -> None:
         chat_id = -100
         message_thread_id = None
 
+    class InvalidReplacement:
+        api_kwargs: ClassVar[dict[str, Any]] = {}
+
+        async def delete(self) -> None:
+            nonlocal invalid_replacement_deleted
+            invalid_replacement_deleted = True
+
     class Bot:
         async def send_message(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(api_kwargs={})
+            return InvalidReplacement()
 
         async def do_api_request(self, endpoint: str, api_kwargs: dict[str, Any]) -> bool:
             nonlocal delete_calls
@@ -386,6 +391,7 @@ async def test_incomplete_ephemeral_media_replacement_keeps_original() -> None:
         )
 
     assert delete_calls == 0
+    assert invalid_replacement_deleted
 
 
 @pytest.mark.asyncio
@@ -562,7 +568,6 @@ async def test_post_init_configures_profile_and_notifies_owner(tmp_path: Path) -
         async def set_my_short_description(self, description: str) -> None:
             events.append(("short-description", description))
 
-
         async def send_message(self, chat_id: int, text: str) -> None:
             events.append(("owner", (chat_id, text)))
 
@@ -588,7 +593,7 @@ async def test_post_init_configures_profile_and_notifies_owner(tmp_path: Path) -
         "ping",
     }
     assert all(command.api_kwargs.get("is_ephemeral") is True for command in group_commands)
-    assert ("owner", (42, "CryptoMathXBot v2.0.0 запущен и готов к работе.")) in events
+    assert ("owner", (42, "CryptoMathXBot v2.0.1 запущен и готов к работе.")) in events
     assert events[-1] == ("market-close", None)
 
 
@@ -971,6 +976,57 @@ async def test_public_group_callback_renders_success_in_ephemeral_overlay(
 
 
 @pytest.mark.asyncio
+async def test_public_group_callback_progress_failure_returns_private_alert() -> None:
+    send_calls: list[dict[str, Any]] = []
+
+    class Query:
+        id = "callback-progress-failure"
+        data = "q|token|refresh"
+
+        def __init__(self, message: Message) -> None:
+            self.message = message
+            self.answers: list[tuple[str | None, bool]] = []
+
+        async def answer(self, text: str | None = None, *, show_alert: bool = False) -> None:
+            self.answers.append((text, show_alert))
+
+    class Bot:
+        async def send_message(self, **kwargs: Any) -> Message:
+            send_calls.append(kwargs)
+            raise BadRequest("ephemeral progress unavailable")
+
+    source_message = Message(
+        message_id=7,
+        date=datetime.now(UTC),
+        chat=Chat(-100, "supergroup"),
+        text="public result",
+    )
+    query = Query(source_message)
+    actor_locks = ActorLocks()
+    services = SimpleNamespace(
+        registry=SimpleNamespace(get=lambda token, user_id: object()),
+        actor_locks=actor_locks,
+        limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+    )
+    context = SimpleNamespace(
+        bot=Bot(),
+        application=SimpleNamespace(bot_data={"services": services}),
+    )
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_user=SimpleNamespace(id=42),
+        effective_chat=source_message.chat,
+        effective_message=source_message,
+    )
+
+    await callback_handler(update, context)
+
+    assert query.answers == [("Не удалось открыть личный ответ. Повторите запрос.", True)]
+    assert len(send_calls) == 1
+    assert not actor_locks.get(42).locked()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_public_group_callback_removes_ephemeral_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1052,8 +1108,6 @@ async def test_cancelled_public_group_callback_removes_ephemeral_progress(
         )
     ]
     assert not actor_locks.get(42).locked()
-
-
 
 
 @pytest.mark.asyncio
@@ -1209,7 +1263,6 @@ async def test_symbol_callback_failure_keeps_home_controls(
     assert edits[0][1] is recovery_markup
 
 
-
 @pytest.mark.asyncio
 async def test_group_price_anchors_ephemeral_progress_before_market_work(
     monkeypatch: pytest.MonkeyPatch,
@@ -1265,7 +1318,9 @@ async def test_group_price_anchors_ephemeral_progress_before_market_work(
         actor_locks=ActorLocks(),
         query_slots=asyncio.Semaphore(1),
         settings=SimpleNamespace(max_symbols=8, query_timeout=1),
-        registry=SimpleNamespace(create=lambda user_id, expression, result: SimpleNamespace(token="t")),
+        registry=SimpleNamespace(
+            create=lambda user_id, expression, result: SimpleNamespace(token="t")
+        ),
     )
     context = SimpleNamespace(
         bot=Bot(),
@@ -1294,6 +1349,215 @@ async def test_group_price_anchors_ephemeral_progress_before_market_work(
 
     assert calls[1][0] == "edit_ephemeral_message_text"
     assert calls[1][1]["ephemeral_message_id"] == 98
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expression", "expected_fragment"),
+    [("BTC", "Bitcoin"), ("2 + 2", "<b>4</b>")],
+)
+async def test_ephemeral_progress_failure_does_not_abort_group_query(
+    monkeypatch: pytest.MonkeyPatch,
+    expression: str,
+    expected_fragment: str,
+) -> None:
+    send_calls: list[dict[str, Any]] = []
+    coin = Coin("bitcoin", "BTC", "Bitcoin", 1)
+    calculation = Calculation(
+        expression="BTC",
+        coefficients={"BTC": Decimal(1)},
+        constant_usd=Decimal(0),
+        quotes={
+            "BTC": Quote(
+                coin,
+                Decimal("100"),
+                Decimal("1"),
+                "Binance",
+                "BTCUSDT",
+                datetime.now(UTC),
+            )
+        },
+        total_usd=Decimal("100"),
+        usd_rub=None,
+        cbr_date=None,
+    )
+
+    async def calculate(*args: Any, **kwargs: Any) -> Calculation:
+        return calculation
+
+    class Bot:
+        async def send_message(self, **kwargs: Any) -> Message:
+            send_calls.append(kwargs)
+            if len(send_calls) == 1:
+                raise BadRequest("ephemeral progress unavailable")
+            return Message(
+                message_id=0,
+                date=datetime.now(UTC),
+                chat=Chat(-100, "supergroup"),
+                text=kwargs["text"],
+                api_kwargs={"ephemeral_message_id": 99},
+            )
+
+    monkeypatch.setattr("cryptomathxbot.app._calculate", calculate)
+    services = SimpleNamespace(
+        limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+        notice_limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+        actor_locks=ActorLocks(),
+        query_slots=asyncio.Semaphore(1),
+        settings=SimpleNamespace(max_symbols=8, query_timeout=1),
+        registry=QueryRegistry(),
+    )
+    context = SimpleNamespace(
+        bot=Bot(),
+        application=SimpleNamespace(bot_data={"services": services}),
+    )
+    incoming = SimpleNamespace(
+        message_id=0,
+        message_thread_id=None,
+        api_kwargs={"ephemeral_message_id": 97},
+    )
+    update = SimpleNamespace(
+        update_id=100,
+        effective_user=SimpleNamespace(id=42),
+        effective_chat=SimpleNamespace(id=-100, type="supergroup"),
+        effective_message=incoming,
+        callback_query=None,
+    )
+
+    await _handle_expression(update, context, expression)
+
+    assert len(send_calls) == 2
+    assert expected_fragment in send_calls[1]["text"]
+    assert send_calls[1]["api_kwargs"] == {"ephemeral_message_parameters": {"receiver_user_id": 42}}
+
+
+@pytest.mark.asyncio
+async def test_favorites_progress_failure_still_saves_preferences() -> None:
+    send_calls: list[dict[str, Any]] = []
+    saved: list[tuple[str, ...]] = []
+    coin = Coin("bitcoin", "BTC", "Bitcoin", 1)
+
+    class Market:
+        async def resolve_many(self, symbols: tuple[str, ...]) -> dict[str, Coin]:
+            assert symbols == ("BTC",)
+            return {"BTC": coin}
+
+    class Store:
+        async def set_favorites(self, user_id: int, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            assert user_id == 42
+            saved.append(symbols)
+            return symbols
+
+    class Bot:
+        async def send_message(self, **kwargs: Any) -> Message:
+            send_calls.append(kwargs)
+            if len(send_calls) == 1:
+                raise BadRequest("ephemeral progress unavailable")
+            return Message(
+                message_id=0,
+                date=datetime.now(UTC),
+                chat=Chat(-100, "supergroup"),
+                text=kwargs["text"],
+                api_kwargs={"ephemeral_message_id": 99},
+            )
+
+    services = SimpleNamespace(
+        limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+        settings=SimpleNamespace(max_favorites=8),
+        market=Market(),
+        store=Store(),
+        preference_locks=ActorLocks(),
+    )
+    context = SimpleNamespace(
+        args=["BTC"],
+        bot=Bot(),
+        application=SimpleNamespace(bot_data={"services": services}),
+    )
+    incoming = SimpleNamespace(
+        message_id=0,
+        message_thread_id=None,
+        api_kwargs={"ephemeral_message_id": 97},
+    )
+    update = SimpleNamespace(
+        update_id=100,
+        effective_user=SimpleNamespace(id=42),
+        effective_chat=SimpleNamespace(id=-100, type="supergroup"),
+        effective_message=incoming,
+        callback_query=None,
+    )
+
+    await favorites_command(update, context)
+
+    assert saved == [("BTC",)]
+    assert len(send_calls) == 2
+    assert send_calls[1]["api_kwargs"] == {"ephemeral_message_parameters": {"receiver_user_id": 42}}
+
+
+@pytest.mark.asyncio
+async def test_persistent_ephemeral_failure_never_falls_back_publicly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send_calls: list[dict[str, Any]] = []
+    coin = Coin("bitcoin", "BTC", "Bitcoin", 1)
+    calculation = Calculation(
+        expression="BTC",
+        coefficients={"BTC": Decimal(1)},
+        constant_usd=Decimal(0),
+        quotes={
+            "BTC": Quote(
+                coin,
+                Decimal("100"),
+                Decimal("1"),
+                "Binance",
+                "BTCUSDT",
+                datetime.now(UTC),
+            )
+        },
+        total_usd=Decimal("100"),
+        usd_rub=None,
+        cbr_date=None,
+    )
+
+    async def calculate(*args: Any, **kwargs: Any) -> Calculation:
+        return calculation
+
+    class Bot:
+        async def send_message(self, **kwargs: Any) -> Message:
+            send_calls.append(kwargs)
+            raise BadRequest("ephemeral unavailable")
+
+    monkeypatch.setattr("cryptomathxbot.app._calculate", calculate)
+    services = SimpleNamespace(
+        limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+        notice_limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+        actor_locks=ActorLocks(),
+        query_slots=asyncio.Semaphore(1),
+        settings=SimpleNamespace(max_symbols=8, query_timeout=1),
+        registry=QueryRegistry(),
+    )
+    context = SimpleNamespace(
+        bot=Bot(),
+        application=SimpleNamespace(bot_data={"services": services}),
+    )
+    incoming = SimpleNamespace(
+        message_id=0,
+        message_thread_id=None,
+        api_kwargs={"ephemeral_message_id": 97},
+    )
+    update = SimpleNamespace(
+        update_id=100,
+        effective_user=SimpleNamespace(id=42),
+        effective_chat=SimpleNamespace(id=-100, type="supergroup"),
+        effective_message=incoming,
+        callback_query=None,
+    )
+
+    with pytest.raises(BadRequest, match="ephemeral unavailable"):
+        await _handle_expression(update, context, "BTC")
+
+    assert len(send_calls) == 3
+    assert all(call["api_kwargs"] is not None for call in send_calls)
+    assert all("ephemeral_message_parameters" in call["api_kwargs"] for call in send_calls)
 
 
 @pytest.mark.asyncio
@@ -1640,7 +1904,6 @@ async def test_chart_timeout_releases_query_slot() -> None:
     query_slots.release()
 
 
-
 @pytest.mark.asyncio
 async def test_text_result_chart_upload_keeps_png_bytes_after_media_paths() -> None:
     uploaded: list[bytes] = []
@@ -1677,6 +1940,7 @@ async def test_text_result_chart_upload_keeps_png_bytes_after_media_paths() -> N
 
     assert uploaded == [b"\x89PNG\r\n\x1a\nchart"]
 
+
 @pytest.mark.asyncio
 async def test_favorites_command_does_not_bypass_query_rate_limit() -> None:
     class Market:
@@ -1700,7 +1964,6 @@ async def test_favorites_command_does_not_bypass_query_rate_limit() -> None:
     )
 
     await favorites_command(update, context)
-
 
 
 @pytest.mark.asyncio
@@ -1874,6 +2137,7 @@ async def test_cancelled_group_favorites_removes_ephemeral_progress() -> None:
             {"chat_id": -100, "receiver_user_id": 42, "ephemeral_message_id": 95},
         )
     ]
+
 
 @pytest.mark.asyncio
 async def test_result_callback_is_rate_limited_before_market_work() -> None:

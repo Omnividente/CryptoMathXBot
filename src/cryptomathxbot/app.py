@@ -296,7 +296,7 @@ async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     progress: Message | None = None
     if _ephemeral_response_available(update):
-        progress = await _send_html(update, context, "⏳ Проверяю монеты…", ephemeral=True)
+        progress = await _try_send_ephemeral_progress(update, context, "⏳ Проверяю монеты…")
     elif not _is_group(update):
         try:
             await context.bot.send_chat_action(
@@ -422,12 +422,11 @@ async def _handle_expression(
         target_message = edit_message
         if edit_message is None:
             if _is_group(update) and _ephemeral_response_available(update):
-                progress_message = await _send_html(
+                progress_message = await _try_send_ephemeral_progress(
                     update,
                     context,
                     "⏳ Обрабатываю запрос…",
                     reply_markup=recovery_markup,
-                    ephemeral=True,
                 )
                 target_message = progress_message
             else:
@@ -689,14 +688,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         progress_message: Message | None = None
         try:
             progress_text = "Обновляю…" if action == "refresh" else "Готовлю график…"
-            await query.answer(progress_text)
             if _is_group(update) and _ephemeral_message_id(message) is None:
-                progress_message = await _send_html(
+                progress_message = await _try_send_ephemeral_progress(
                     update,
                     context,
                     f"⏳ {progress_text}",
-                    ephemeral=True,
                 )
+                if progress_message is None:
+                    await query.answer(
+                        "Не удалось открыть личный ответ. Повторите запрос.",
+                        show_alert=True,
+                    )
+                    return
+            await query.answer(progress_text)
             target_message = progress_message or message
             if action == "refresh":
                 error_text = await _refresh_callback(
@@ -740,7 +744,9 @@ async def _refresh_callback(
 ) -> str | None:
     query = update.callback_query
     user = update.effective_user
-    source_message = query.message if query is not None and isinstance(query.message, Message) else None
+    source_message = (
+        query.message if query is not None and isinstance(query.message, Message) else None
+    )
     if source_message is None or user is None:
         return "⚠️ Сообщение с кнопкой больше недоступно."
     target_message = edit_message or source_message
@@ -783,7 +789,7 @@ async def _refresh_callback(
         services.registry.update(session, calculation)
     except TimeoutError:
         return "⚠️ Обновление заняло слишком много времени. Попробуйте позже."
-    except (ExpressionError, MarketUnavailable, ValueError):
+    except ExpressionError, MarketUnavailable, ValueError:
         return "⚠️ Не удалось обновить цены. Попробуйте позже."
     except TelegramError as exc:
         _LOGGER.warning("refresh result delivery failed error=%s", type(exc).__name__)
@@ -813,8 +819,6 @@ async def _refresh_market_data(
     return calculation, chart
 
 
-
-
 async def _chart_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -825,7 +829,9 @@ async def _chart_callback(
 ) -> str | None:
     query = update.callback_query
     user = update.effective_user
-    source_message = query.message if query is not None and isinstance(query.message, Message) else None
+    source_message = (
+        query.message if query is not None and isinstance(query.message, Message) else None
+    )
     if source_message is None or user is None:
         return "⚠️ Сообщение с кнопкой больше недоступно."
     target_message = edit_message or source_message
@@ -856,7 +862,7 @@ async def _chart_callback(
         services.registry.set_active_timeframe(session, timeframe)
     except TimeoutError:
         return "⚠️ График не успел загрузиться. Попробуйте позже."
-    except (MarketUnavailable, ValueError):
+    except MarketUnavailable, ValueError:
         return "⚠️ График сейчас недоступен."
     except TelegramError as exc:
         _LOGGER.warning("chart result delivery failed error=%s", type(exc).__name__)
@@ -1041,7 +1047,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     except ExpressionError as exc:
         result = _inline_notice(expression, "Проверьте выражение", str(exc))
         await inline_query.answer([result], cache_time=2, is_personal=True)
-    except (TimeoutError, MarketUnavailable):
+    except TimeoutError, MarketUnavailable:
         result = _inline_notice(
             expression,
             "Цены временно недоступны",
@@ -1087,7 +1093,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 "⚠️ Непредвиденная ошибка. Повторите запрос позже.",
                 ephemeral=_ephemeral_response_available(update),
             )
-        except TelegramError:
+        except TelegramError, RuntimeError:
             _LOGGER.warning("could not deliver error response")
 
 
@@ -1136,6 +1142,27 @@ async def _update_draft(
         )
     except TelegramError:
         pass
+
+
+async def _try_send_ephemeral_progress(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    *,
+    reply_markup: Any = None,
+) -> Message | None:
+    try:
+        return await _send_html(
+            update,
+            context,
+            text,
+            reply_markup=reply_markup,
+            ephemeral=True,
+        )
+    except (TelegramError, RuntimeError) as exc:
+        _LOGGER.warning("ephemeral progress unavailable error=%s", type(exc).__name__)
+        return None
+
 
 async def _send_html(
     update: Update,
@@ -1273,6 +1300,10 @@ async def _replace_media_with_text(
     if sent is None:
         raise RuntimeError("Telegram returned no message")
     if ephemeral_message_id is not None and _ephemeral_message_id(sent) is None:
+        try:
+            await sent.delete()
+        except TelegramError:
+            _LOGGER.error("could not remove invalid non-ephemeral media replacement")
         raise RuntimeError("Telegram returned incomplete ephemeral message")
     if ephemeral_message_id is not None:
         try:
@@ -1526,7 +1557,7 @@ def main() -> None:
     except ConfigurationError as exc:
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         print("Ошибка конфигурации: не удалось прочитать файлы настройки.", file=sys.stderr)
         raise SystemExit(2) from None
 

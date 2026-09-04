@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cryptomathxbot"
-version = "2.0.0"
+version = "2.0.1"
 description = "Telegram cryptocurrency calculator with live prices and charts"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
