@@ -73,6 +73,8 @@ def render_calculation(calculation: Calculation) -> str:
     if calculation.usd_rub is not None:
         cbr_date = escape(calculation.cbr_date or "—")
         lines.append(f"<i>USD/RUB ЦБ: {format_decimal(calculation.usd_rub)} · {cbr_date}</i>")
+    else:
+        lines.append("<i>Курс USD/RUB временно недоступен; итог в рублях не рассчитан.</i>")
     if stale:
         lines.append(
             "<i>⚠️ Использована последняя сохранённая цена: провайдер временно недоступен.</i>"
@@ -196,13 +198,15 @@ def help_text() -> str:
         "• <code>0.5 BTC</code>\n"
         "• <code>(1 BTC + 2 ETH) / 3</code>\n"
         "• <code>раздели 3 на 2</code>\n\n"
-        "В группе упомяните <code>@CryptoMathXBot</code> или ответьте на сообщение бота. "
-        "Так обычная переписка не отправляется рыночным API.\n\n"
+        "В группе упомяните <code>@CryptoMathXBot</code> или используйте приватную "
+        "команду <code>/price</code>. Обычная переписка не отправляется рыночным API.\n\n"
         "<b>Команды</b>\n"
         "/price — рассчитать выражение\n"
         "/favorites — личные быстрые кнопки (в группе команда приватная)\n"
         "/settings — открыть настройки\n"
         "/ping — проверить доступность"
+        "\n\nБиржевые цены в USDT, USDC или FDUSD используются как эквивалент USD "
+        "и могут отклоняться при потере привязки stablecoin."
     )
 
 

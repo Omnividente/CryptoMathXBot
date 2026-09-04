@@ -7,7 +7,7 @@ import re
 import time
 import xml.etree.ElementTree as StdET
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
@@ -122,36 +122,33 @@ class MarketService:
             cached = self._search_cache.get(normalized)
             if cached is not None:
                 return cached.value
-            try:
-                payload = await self._request_json(
-                    "GET", f"{_COINGECKO}/search", params={"query": normalized}
-                )
-                raw_coins = payload.get("coins", []) if isinstance(payload, dict) else []
-                matches: list[Coin] = []
-                for item in raw_coins:
-                    if not isinstance(item, dict):
-                        continue
-                    coin_id = str(item.get("id") or "")
-                    if _COIN_ID_RE.fullmatch(coin_id) is None:
-                        continue
-                    symbol = str(item.get("symbol") or "").upper()[:32]
-                    raw_name = str(item.get("name") or "")[:256]
-                    if _SYMBOL_RE.fullmatch(symbol) is None:
-                        continue
-                    if normalized not in {
-                        coin_id.casefold(),
-                        symbol.casefold(),
-                        raw_name.casefold(),
-                    }:
-                        continue
-                    name = (raw_name.strip() or symbol)[:80]
-                    rank_value = item.get("market_cap_rank")
-                    rank = int(rank_value) if isinstance(rank_value, int) else None
-                    matches.append(Coin(coin_id, symbol, name, rank))
-                matches.sort(key=lambda coin: coin.market_cap_rank or 1_000_000)
-                result = matches[0] if matches else None
-            except (ValueError, TypeError):
-                result = None
+            payload = await self._request_json(
+                "GET", f"{_COINGECKO}/search", params={"query": normalized}
+            )
+            raw_coins = payload.get("coins", []) if isinstance(payload, dict) else []
+            matches: list[Coin] = []
+            for item in raw_coins:
+                if not isinstance(item, dict):
+                    continue
+                coin_id = str(item.get("id") or "")
+                if _COIN_ID_RE.fullmatch(coin_id) is None:
+                    continue
+                symbol = str(item.get("symbol") or "").upper()[:32]
+                raw_name = str(item.get("name") or "")[:256]
+                if _SYMBOL_RE.fullmatch(symbol) is None:
+                    continue
+                if normalized not in {
+                    coin_id.casefold(),
+                    symbol.casefold(),
+                    raw_name.casefold(),
+                }:
+                    continue
+                name = (raw_name.strip() or symbol)[:80]
+                rank_value = item.get("market_cap_rank")
+                rank = rank_value if isinstance(rank_value, int) else None
+                matches.append(Coin(coin_id, symbol, name, rank))
+            matches.sort(key=lambda coin: coin.market_cap_rank or 1_000_000)
+            result = matches[0] if matches else None
             self._search_cache.set(
                 normalized,
                 result,
@@ -184,13 +181,17 @@ class MarketService:
         if not missing:
             return result
 
-        pair_sets = await asyncio.gather(
-            self._pairs("binance"),
-            self._pairs("kucoin"),
-            return_exceptions=True,
-        )
-        binance_pairs = pair_sets[0] if isinstance(pair_sets[0], frozenset) else frozenset()
-        kucoin_pairs = pair_sets[1] if isinstance(pair_sets[1], frozenset) else frozenset()
+        if any(coin.id in _EXCHANGE_SYMBOL_BY_COIN_ID for coin in missing):
+            pair_sets = await asyncio.gather(
+                self._pairs("binance"),
+                self._pairs("kucoin"),
+                return_exceptions=True,
+            )
+            binance_pairs = pair_sets[0] if isinstance(pair_sets[0], frozenset) else frozenset()
+            kucoin_pairs = pair_sets[1] if isinstance(pair_sets[1], frozenset) else frozenset()
+        else:
+            binance_pairs = frozenset()
+            kucoin_pairs = frozenset()
 
         exchange_values = await asyncio.gather(
             *(self._exchange_quote(coin, binance_pairs, kucoin_pairs) for coin in missing),
@@ -249,7 +250,7 @@ class MarketService:
                 break
             if value is None or value <= 0:
                 raise MarketUnavailable("USD rate is absent")
-            cbr_date = root.attrib.get("Date") or datetime.now().strftime("%d.%m.%Y")
+            cbr_date = root.attrib.get("Date")
             self._cbr_cache.set("usd", (value, cbr_date), ttl=3600, stale_ttl=3 * 86400)
             return value, cbr_date
         except (
@@ -364,7 +365,7 @@ class MarketService:
                             change,
                             "Binance",
                             pair,
-                            datetime.now(timezone.utc),
+                            datetime.now(UTC),
                         )
                 except MarketUnavailable:
                     break
@@ -390,7 +391,7 @@ class MarketService:
                             change,
                             "KuCoin",
                             pair,
-                            datetime.now(timezone.utc),
+                            datetime.now(UTC),
                         )
                 except MarketUnavailable:
                     break
@@ -424,7 +425,7 @@ class MarketService:
                 change,
                 "CoinGecko",
                 None,
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
             )
         return result
 
@@ -460,7 +461,7 @@ class MarketService:
                 _decimal_or_none(usd.get("percent_change_24h")),
                 "CoinPaprika",
                 None,
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
             )
         except MarketUnavailable:
             return None

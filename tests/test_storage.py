@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from cryptomathxbot.storage import PreferencesStore
 
 
 @pytest.mark.asyncio
-async def test_legacy_favorites_are_migrated_without_sharing_users(tmp_path: Path) -> None:
+async def test_legacy_user_and_chat_scopes_are_migrated(tmp_path: Path) -> None:
     legacy = tmp_path / "favorites.json"
     legacy.write_text(
         json.dumps({"123": ["btc", "eth"], "-456": ["xmr"]}),
@@ -25,6 +26,24 @@ async def test_legacy_favorites_are_migrated_without_sharing_users(tmp_path: Pat
     assert await store.favorites(999, -456) == ("XMR",)
     assert await store.favorites(999) == ("BTC",)
 
+
+
+@pytest.mark.asyncio
+async def test_repeated_legacy_migration_never_overwrites_user_preferences(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "favorites.json"
+    database = tmp_path / "state.sqlite3"
+    legacy.write_text(json.dumps({"123": ["BTC"]}), encoding="utf-8")
+    store = PreferencesStore(database, default_favorites=("BTC",), max_favorites=8)
+    await store.initialize(legacy)
+    await store.set_favorites(123, ("SOL",))
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM metadata WHERE key = 'legacy_favorites_migrated'")
+    await store.initialize(legacy)
+
+    assert await store.favorites(123) == ("SOL",)
 
 @pytest.mark.asyncio
 async def test_user_favorites_override_legacy_group_defaults(tmp_path: Path) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .domain import Chart
 
@@ -23,7 +23,7 @@ def _render_chart(chart: Chart, dpi: int) -> io.BytesIO:
     from matplotlib.figure import Figure
     from matplotlib.ticker import FuncFormatter
     timestamps = [
-        date2num(datetime.fromtimestamp(point[0] / 1000, tz=timezone.utc))  # type: ignore[no-untyped-call]
+        date2num(datetime.fromtimestamp(point[0] / 1000, tz=UTC))  # type: ignore[no-untyped-call]
         for point in chart.points
     ]
     prices = [point[1] for point in chart.points]

@@ -7,6 +7,8 @@ favorites.json
 logs/
 .venv/
 .runtime-venv/
+.runtime-venv.new/
+.runtime-venv.previous/
 .mplconfig/
 .vs/
 __pycache__/

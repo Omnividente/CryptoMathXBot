@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from cryptomathxbot.domain import Calculation, Chart, Coin, Quote
@@ -6,6 +6,7 @@ from cryptomathxbot.session import QueryRegistry
 from cryptomathxbot.ui import (
     chart_caption,
     format_decimal,
+    help_text,
     render_calculation,
     result_keyboard,
     settings_keyboard,
@@ -20,7 +21,7 @@ def calculation() -> Calculation:
         change_24h=Decimal("2.5"),
         source="Binance",
         pair="BTCUSDT",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
     return Calculation(
         expression="0.5 BTC",
@@ -69,6 +70,33 @@ def test_result_keyboard_marks_selected_timeframe_and_caption_explains_change() 
     assert "1 ч" in labels
     assert "График BTC · 24 ч · изменение +10.00%" in caption
 
+
+def test_missing_cbr_rate_is_explained_and_chart_caption_fits() -> None:
+    value = calculation()
+    value = Calculation(
+        expression=value.expression,
+        coefficients=value.coefficients,
+        constant_usd=value.constant_usd,
+        quotes=value.quotes,
+        total_usd=value.total_usd,
+        usd_rub=None,
+        cbr_date=None,
+    )
+
+    rendered = render_calculation(value)
+    caption = chart_caption(
+        value,
+        Chart("BTC", "24h", ((1, 100.0), (2, 110.0)), "Binance"),
+    )
+
+    assert "Курс USD/RUB временно недоступен" in rendered
+    assert len(caption) <= 1024
+
+
+
+def test_help_discloses_stablecoin_usd_assumption() -> None:
+    assert "USDT, USDC или FDUSD" in help_text()
+    assert "потере привязки" in help_text()
 
 def test_settings_buttons_make_selected_state_visible() -> None:
     keyboard = settings_keyboard(("BTC", "XMR"))
@@ -120,7 +148,7 @@ def test_rendered_market_data_stays_within_telegram_message_limit() -> None:
             change_24h=Decimal("9E+100"),
             source="CoinGecko",
             pair=None,
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=datetime.now(UTC),
         )
     value = Calculation(
         expression="large",

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,17 +72,17 @@ class PreferencesStore:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database, timeout=5.0)
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
     def _initialize_sync(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(_SCHEMA)
 
     def _read_favorites_sync(self, scopes: list[str]) -> tuple[str, ...] | None:
         placeholders = ",".join("?" for _ in scopes)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 f"SELECT scope, favorites_json FROM preferences WHERE scope IN ({placeholders})",
                 scopes,
@@ -108,7 +109,7 @@ class PreferencesStore:
         favorites: tuple[str, ...],
     ) -> None:
         payload = json.dumps(favorites, ensure_ascii=False, separators=(",", ":"))
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO preferences(scope, favorites_json)
@@ -135,49 +136,58 @@ class PreferencesStore:
         if not isinstance(data, dict):
             return
 
-        migrated = 0
+        rows: list[tuple[str, tuple[str, ...]]] = []
+        for raw_scope, raw_symbols in data.items():
+            if not isinstance(raw_symbols, list):
+                continue
+            try:
+                numeric_id = int(raw_scope)
+            except (TypeError, ValueError):
+                continue
+            symbols = tuple(
+                dict.fromkeys(
+                    str(value).strip().upper() for value in raw_symbols if str(value).strip()
+                )
+            )[: self._max_favorites]
+            if not symbols:
+                continue
+            scope = self.user_scope(numeric_id) if numeric_id > 0 else self.chat_scope(numeric_id)
+            rows.append((scope, symbols))
+
         async with self._write_lock:
-            for raw_scope, raw_symbols in data.items():
-                if not isinstance(raw_symbols, list):
-                    continue
-                try:
-                    numeric_id = int(raw_scope)
-                except (TypeError, ValueError):
-                    continue
-                symbols = tuple(
-                    dict.fromkeys(
-                        str(value).strip().upper() for value in raw_symbols if str(value).strip()
-                    )
-                )[: self._max_favorites]
-                if not symbols:
-                    continue
-                scope = (
-                    self.user_scope(numeric_id) if numeric_id > 0 else self.chat_scope(numeric_id)
-                )
-                await asyncio.to_thread(
-                    self._write_preferences_sync,
-                    scope,
-                    symbols,
-                )
-                migrated += 1
-            await asyncio.to_thread(
-                self._set_metadata_sync,
-                "legacy_favorites_migrated",
-                str(migrated),
-            )
+            migrated = await asyncio.to_thread(self._migrate_legacy_sync, rows)
         _LOGGER.info("legacy favorites migrated count=%d", migrated)
 
     def _metadata_sync(self, key: str) -> str | None:
-        with self._connect() as connection:
-            row = connection.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (key,),
+            ).fetchone()
         return str(row[0]) if row else None
 
-    def _set_metadata_sync(self, key: str, value: str) -> None:
-        with self._connect() as connection:
+    def _migrate_legacy_sync(
+        self,
+        rows: list[tuple[str, tuple[str, ...]]],
+    ) -> int:
+        migrated = 0
+        with closing(self._connect()) as connection, connection:
+            for scope, favorites in rows:
+                payload = json.dumps(favorites, ensure_ascii=False, separators=(",", ":"))
+                cursor = connection.execute(
+                    """
+                    INSERT INTO preferences(scope, favorites_json)
+                    VALUES (?, ?)
+                    ON CONFLICT(scope) DO NOTHING
+                    """,
+                    (scope, payload),
+                )
+                migrated += cursor.rowcount
             connection.execute(
                 """
                 INSERT INTO metadata(key, value) VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """,
-                (key, value),
+                ("legacy_favorites_migrated", str(migrated)),
             )
+        return migrated

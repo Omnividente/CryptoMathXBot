@@ -1,6 +1,6 @@
 import gzip
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ def settings(*, retries: int = 1) -> Settings:
         rate_limit_requests=8,
         rate_limit_window=30,
         http_timeout=2,
+        query_timeout=5,
         http_retries=retries,
         chart_dpi=100,
     )
@@ -328,7 +329,7 @@ async def test_chart_uses_stale_cache_when_all_providers_fail(monkeypatch: Any) 
         None,
         "CoinGecko",
         None,
-        datetime.now(timezone.utc),
+        datetime.now(UTC),
     )
     previous = Chart("BTC", "24h", ((1_000, 99.0), (2_000, 100.0)), "CoinGecko")
 
@@ -393,3 +394,39 @@ async def test_oversized_json_response_is_rejected(monkeypatch: Any) -> None:
         with pytest.raises(MarketUnavailable, match="unexpectedly large"):
             await service.resolve_coin("EXM")
     assert chunks_read == [b"12", b"345"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_only_quotes_skip_exchange_catalogs() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/simple/price"):
+            return httpx.Response(200, json={"sideshift-token": {"usd": 1.0}})
+        raise AssertionError(str(request.url))
+
+    coin = Coin("sideshift-token", "XAI", "SideShift")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        quotes = await MarketService(settings(retries=0), client).quotes((coin,))
+
+    assert quotes["XAI"].source == "CoinGecko"
+    assert paths == ["/api/v3/simple/price"]
+
+
+@pytest.mark.asyncio
+async def test_cbr_missing_date_remains_unknown() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=(
+                b"<ValCurs><Valute><CharCode>USD</CharCode>"
+                b"<Nominal>1</Nominal><Value>80,50</Value></Valute></ValCurs>"
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        rate, rate_date = await MarketService(settings(retries=0), client).usd_rub()
+
+    assert rate == Decimal("80.50")
+    assert rate_date is None
