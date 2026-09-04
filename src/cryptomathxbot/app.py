@@ -697,23 +697,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     f"⏳ {progress_text}",
                     ephemeral=True,
                 )
+            target_message = progress_message or message
             if action == "refresh":
-                error_text = await _refresh_callback(update, context, session)
+                error_text = await _refresh_callback(
+                    update,
+                    context,
+                    session,
+                    edit_message=target_message,
+                )
             else:
-                error_text = await _chart_callback(update, context, session, parts[3])
+                error_text = await _chart_callback(
+                    update,
+                    context,
+                    session,
+                    parts[3],
+                    edit_message=target_message,
+                )
             if error_text is not None:
-                error_target = progress_message or message
                 await _edit_error_message(
                     context.bot,
-                    error_target,
+                    target_message,
                     error_text,
                     getattr(message, "reply_markup", None),
                     receiver_user_id=user.id,
                 )
-                progress_message = None
-            elif progress_message is not None:
-                await _delete_ephemeral_message(context.bot, progress_message, user.id)
-                progress_message = None
+            progress_message = None
         finally:
             actor_lock.release()
             if progress_message is not None:
@@ -727,12 +735,15 @@ async def _refresh_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     session: QuerySession,
+    *,
+    edit_message: Message | None = None,
 ) -> str | None:
     query = update.callback_query
     user = update.effective_user
-    message = query.message if query is not None and isinstance(query.message, Message) else None
-    if message is None or user is None:
+    source_message = query.message if query is not None and isinstance(query.message, Message) else None
+    if source_message is None or user is None:
         return "⚠️ Сообщение с кнопкой больше недоступно."
+    target_message = edit_message or source_message
     services = _services(context)
     try:
         calculation, chart = await asyncio.wait_for(
@@ -741,7 +752,7 @@ async def _refresh_callback(
                 lambda: _refresh_market_data(
                     session,
                     services,
-                    include_chart=bool(message.photo and session.active_timeframe),
+                    include_chart=bool(source_message.photo and session.active_timeframe),
                 ),
             ),
             timeout=services.settings.query_timeout,
@@ -755,7 +766,7 @@ async def _refresh_callback(
             image = await services.charts.render(chart)
             await _edit_result_media(
                 context.bot,
-                message,
+                target_message,
                 image,
                 chart_caption(calculation, chart),
                 keyboard,
@@ -764,7 +775,7 @@ async def _refresh_callback(
         else:
             await _edit_result_message(
                 context.bot,
-                message,
+                target_message,
                 render_calculation(calculation),
                 keyboard,
                 receiver_user_id=user.id,
@@ -809,12 +820,15 @@ async def _chart_callback(
     context: ContextTypes.DEFAULT_TYPE,
     session: QuerySession,
     timeframe: str,
+    *,
+    edit_message: Message | None = None,
 ) -> str | None:
     query = update.callback_query
     user = update.effective_user
-    message = query.message if query is not None and isinstance(query.message, Message) else None
-    if message is None or user is None:
+    source_message = query.message if query is not None and isinstance(query.message, Message) else None
+    if source_message is None or user is None:
         return "⚠️ Сообщение с кнопкой больше недоступно."
+    target_message = edit_message or source_message
     if timeframe not in {"1h", "24h", "7d"}:
         return "⚠️ Неизвестный период."
     calculation = session.calculation
@@ -833,7 +847,7 @@ async def _chart_callback(
         keyboard = result_keyboard(session.token, calculation, active_timeframe=timeframe)
         await _edit_result_media(
             context.bot,
-            message,
+            target_message,
             image,
             caption,
             keyboard,
