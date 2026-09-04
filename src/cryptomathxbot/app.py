@@ -486,33 +486,33 @@ async def _handle_expression(
                 round((time.monotonic() - started_at) * 1000),
             )
         except TimeoutError:
-            await _deliver_error(
+            if await _deliver_error(
                 update,
                 context,
                 target_message,
                 "⚠️ Запрос занял слишком много времени. Попробуйте ещё раз.",
-            )
-            progress_message = None
+            ):
+                progress_message = None
         except ExpressionError as exc:
-            await _deliver_error(update, context, target_message, f"⚠️ {_escape(str(exc))}")
-            progress_message = None
+            if await _deliver_error(update, context, target_message, f"⚠️ {_escape(str(exc))}"):
+                progress_message = None
         except MarketUnavailable:
-            await _deliver_error(
+            if await _deliver_error(
                 update,
                 context,
                 target_message,
                 "⚠️ Рыночные источники временно недоступны. Повторите через минуту.",
-            )
-            progress_message = None
+            ):
+                progress_message = None
         except Exception:
             _LOGGER.exception("query failed")
-            await _deliver_error(
+            if await _deliver_error(
                 update,
                 context,
                 target_message,
                 "⚠️ Не удалось выполнить расчёт. Попробуйте ещё раз.",
-            )
-            progress_message = None
+            ):
+                progress_message = None
         finally:
             if progress_message is not None:
                 await _delete_ephemeral_message(context.bot, progress_message, user.id)
@@ -1459,23 +1459,28 @@ async def _deliver_error(
     context: ContextTypes.DEFAULT_TYPE,
     edit_message: Message | None,
     text: str,
-) -> None:
+) -> bool:
     user = update.effective_user
-    if edit_message is not None and user is not None:
-        await _edit_error_message(
-            context.bot,
-            edit_message,
-            text,
-            getattr(edit_message, "reply_markup", None),
-            receiver_user_id=user.id,
-        )
-    else:
-        await _send_html(
-            update,
-            context,
-            text,
-            ephemeral=_ephemeral_response_available(update),
-        )
+    try:
+        if edit_message is not None and user is not None:
+            await _edit_error_message(
+                context.bot,
+                edit_message,
+                text,
+                getattr(edit_message, "reply_markup", None),
+                receiver_user_id=user.id,
+            )
+        else:
+            await _send_html(
+                update,
+                context,
+                text,
+                ephemeral=_ephemeral_response_available(update),
+            )
+    except (TelegramError, RuntimeError) as exc:
+        _LOGGER.warning("could not deliver query error response error=%s", type(exc).__name__)
+        return False
+    return True
 
 
 def _group_expression(
