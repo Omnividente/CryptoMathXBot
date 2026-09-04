@@ -19,6 +19,7 @@
 ## Требования
 
 - Python 3.14 для Windows launcher и ручной установки;
+  Диапазон намеренно ограничен этой minor-веткой: Windows launcher, hash-lock и CI обновляются вместе при плановом переходе на следующую версию Python.
 - токен Telegram Bot API;
 - сетевой доступ к Telegram и публичным API котировок.
 
