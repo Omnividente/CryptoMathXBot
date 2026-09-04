@@ -42,6 +42,7 @@ def test_common_compact_notation_is_supported() -> None:
 
 def test_keyboard_layout_and_words_are_normalized() -> None:
     assert fix_keyboard_layout("иеc") == "btc"
+    assert fix_keyboard_layout("ИЕC") == "BTC"
     assert normalize_math_words("умножь 3 на 2") == "3 * 2"
 
 

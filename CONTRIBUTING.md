@@ -56,7 +56,8 @@ Severity: P0 | P1 | P2 | P3
 .\.venv\Scripts\python.exe -m mypy
 .\.venv\Scripts\python.exe -m pip_audit .
 .\.venv\Scripts\python.exe -m pip_audit -r requirements-bootstrap.txt
-.\.venv\Scripts\python.exe -m piptools compile --generate-hashes --reuse-hashes --strip-extras --no-header --resolver=backtracking --index-url=https://pypi.org/simple --output-file=requirements-windows.txt pyproject.toml
+.\.venv\Scripts\python.exe -m pip_audit -r requirements-windows.txt
+.\.venv\Scripts\python.exe -m piptools compile --upgrade --generate-hashes --reuse-hashes --strip-extras --no-header --resolver=backtracking --index-url=https://pypi.org/simple --output-file=requirements-windows.txt pyproject.toml
 git diff --exit-code -- requirements-windows.txt requirements-bootstrap.txt
 ```
 

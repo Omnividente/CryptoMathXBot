@@ -7,7 +7,7 @@ name = "cryptomathxbot"
 version = "2.0.0"
 description = "Telegram cryptocurrency calculator with live prices and charts"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14,<3.15"
 license = "MIT"
 authors = [{ name = "Omnividente" }]
 dependencies = [
@@ -40,7 +40,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py314"
 line-length = 100
 src = ["src", "tests"]
 
@@ -49,7 +49,7 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
 ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.14"
 strict = true
 files = ["src/cryptomathxbot"]
 disable_error_code = ["import-untyped"]

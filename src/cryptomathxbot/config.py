@@ -61,6 +61,7 @@ class Settings:
     rate_limit_requests: int
     rate_limit_window: int
     http_timeout: float
+    query_timeout: float
     http_retries: int
     chart_dpi: int
 
@@ -109,6 +110,7 @@ class Settings:
             rate_limit_requests=_bounded_int("CRYPTOMATHX_RATE_LIMIT_REQUESTS", 8, 1, 100),
             rate_limit_window=_bounded_int("CRYPTOMATHX_RATE_LIMIT_WINDOW", 30, 1, 3600),
             http_timeout=_bounded_float("CRYPTOMATHX_HTTP_TIMEOUT", 10.0, 1.0, 60.0),
+            query_timeout=_bounded_float("CRYPTOMATHX_QUERY_TIMEOUT", 25.0, 3.0, 120.0),
             http_retries=_bounded_int("CRYPTOMATHX_HTTP_RETRIES", 2, 0, 5),
             chart_dpi=_bounded_int("CRYPTOMATHX_CHART_DPI", 140, 72, 240),
         )

@@ -3,25 +3,22 @@ from __future__ import annotations
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
-class CacheHit(Generic[T]):
+class CacheHit[T]:
     value: T
     stale: bool
 
 
 @dataclass(frozen=True, slots=True)
-class _Entry(Generic[T]):
+class _Entry[T]:
     value: T
     expires_at: float
     stale_until: float
 
 
-class TTLCache(Generic[T]):
+class TTLCache[T]:
     def __init__(self, max_items: int) -> None:
         if max_items < 1:
             raise ValueError("max_items must be positive")

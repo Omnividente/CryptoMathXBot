@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib
 import os
@@ -11,6 +12,11 @@ from typing import Any, BinaryIO
 
 class AlreadyRunningError(RuntimeError):
     """Raised when another bot process owns the instance lock."""
+
+
+class InstanceLockError(RuntimeError):
+    """Raised when the instance lock cannot be created or inspected."""
+
 
 
 _HELD_PATHS: set[Path] = set()
@@ -69,7 +75,7 @@ class SingleInstanceLock:
             self._release_windows_mutex()
             with _HELD_PATHS_LOCK:
                 _HELD_PATHS.discard(self._normalized_path)
-            raise AlreadyRunningError("another CryptoMathXBot instance is running") from exc
+            raise InstanceLockError("CryptoMathXBot instance lock is unavailable") from exc
 
         self._file = handle
         return self
@@ -103,7 +109,12 @@ class SingleInstanceLock:
 def _lock_posix_file(handle: BinaryIO) -> None:
     fcntl: Any = importlib.import_module("fcntl")
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            raise AlreadyRunningError("another CryptoMathXBot instance is running") from exc
+        raise
 
 
 def _unlock_posix_file(handle: BinaryIO) -> None:
@@ -118,9 +129,7 @@ def _acquire_windows_mutex(path: Path) -> int:
 
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = wintypes.HANDLE
-    mutex_name = (
-        "Local\\CryptoMathXBot-" + hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()
-    )
+    mutex_name = _windows_mutex_name(path)
     handle = kernel32.CreateMutexW(None, True, mutex_name)
     if not handle:
         error = ctypes.get_last_error()
@@ -133,6 +142,11 @@ def _acquire_windows_mutex(path: Path) -> int:
         kernel32.CloseHandle(handle)
         raise OSError("CreateMutexW returned an invalid handle")
     return value
+
+
+def _windows_mutex_name(path: Path) -> str:
+    digest = hashlib.sha256(str(path).casefold().encode("utf-8")).hexdigest()
+    return "Global\\CryptoMathXBot-" + digest
 
 
 def _close_windows_mutex(handle: int) -> None:

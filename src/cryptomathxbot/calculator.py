@@ -20,8 +20,6 @@ class Token:
 @dataclass(frozen=True, slots=True)
 class ParsedExpression:
     source: str
-    python_expression: str
-    variable_symbols: dict[str, str]
     coefficients: dict[str, Decimal]
     constant: Decimal
 
@@ -33,46 +31,44 @@ class ParsedExpression:
         missing = self.coefficients.keys() - prices.keys()
         if missing:
             raise ExpressionError(f"Нет цены для: {', '.join(sorted(missing))}")
-        variables = {
-            variable: prices[symbol]
-            for variable, symbol in self.variable_symbols.items()
-            if symbol in prices
-        }
-        root = ast.parse(self.python_expression, mode="eval")
-        with localcontext() as context:
-            context.prec = 50
-            total = _evaluate_numeric(root.body, self.python_expression, variables)
+        total = self.constant
+        for symbol, coefficient in self.coefficients.items():
+            total += coefficient * prices[symbol]
         return _bounded_decimal(total)
 
 
+_RU_LAYOUT = {
+    "й": "q",
+    "ц": "w",
+    "у": "e",
+    "к": "r",
+    "е": "t",
+    "н": "y",
+    "г": "u",
+    "ш": "i",
+    "щ": "o",
+    "з": "p",
+    "ф": "a",
+    "ы": "s",
+    "в": "d",
+    "а": "f",
+    "п": "g",
+    "р": "h",
+    "о": "j",
+    "л": "k",
+    "д": "l",
+    "я": "z",
+    "ч": "x",
+    "с": "c",
+    "м": "v",
+    "и": "b",
+    "т": "n",
+    "ь": "m",
+}
 _RU_TO_EN = str.maketrans(
     {
-        "й": "q",
-        "ц": "w",
-        "у": "e",
-        "к": "r",
-        "е": "t",
-        "н": "y",
-        "г": "u",
-        "ш": "i",
-        "щ": "o",
-        "з": "p",
-        "ф": "a",
-        "ы": "s",
-        "в": "d",
-        "а": "f",
-        "п": "g",
-        "р": "h",
-        "о": "j",
-        "л": "k",
-        "д": "l",
-        "я": "z",
-        "ч": "x",
-        "с": "c",
-        "м": "v",
-        "и": "b",
-        "т": "n",
-        "ь": "m",
+        **_RU_LAYOUT,
+        **{source.upper(): target.upper() for source, target in _RU_LAYOUT.items()},
     }
 )
 _WORD = r"[A-Za-zА-Яа-яЁё0-9.,]+"
@@ -158,7 +154,7 @@ def tokenize(text: str) -> tuple[Token, ...]:
 def parse_expression(text: str, *, max_symbols: int = 8) -> ParsedExpression:
     tokens = tokenize(text)
     variable_for_symbol: dict[str, str] = {}
-    variable_symbols: dict[str, str] = {}
+    symbol_for_variable: dict[str, str] = {}
     output: list[str] = []
     previous: Token | None = None
 
@@ -177,7 +173,7 @@ def parse_expression(text: str, *, max_symbols: int = 8) -> ParsedExpression:
                     raise ExpressionError(f"В одном запросе максимум {max_symbols} монет")
                 variable = f"S{len(variable_for_symbol)}"
                 variable_for_symbol[token.value] = variable
-                variable_symbols[variable] = token.value
+                symbol_for_variable[variable] = token.value
             output.append(variable)
         else:
             output.append(token.value)
@@ -195,7 +191,7 @@ def parse_expression(text: str, *, max_symbols: int = 8) -> ParsedExpression:
         context.prec = 50
         constant, variable_coefficients = _as_affine(root.body, python_expression)
     coefficients = {
-        variable_symbols[variable]: coefficient
+        symbol_for_variable[variable]: coefficient
         for variable, coefficient in variable_coefficients.items()
         if coefficient != 0
     }
@@ -203,8 +199,6 @@ def parse_expression(text: str, *, max_symbols: int = 8) -> ParsedExpression:
         raise ExpressionError("Монеты сократились до нулевого количества")
     return ParsedExpression(
         source=normalize_math_words(text),
-        python_expression=python_expression,
-        variable_symbols=variable_symbols,
         coefficients=coefficients,
         constant=constant,
     )
@@ -270,44 +264,6 @@ def _as_affine(node: ast.AST, expression: str) -> tuple[Decimal, dict[str, Decim
     return _bounded_decimal(result), {}
 
 
-def _evaluate_numeric(
-    node: ast.AST,
-    expression: str,
-    variables: dict[str, Decimal],
-) -> Decimal:
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        source = ast.get_source_segment(expression, node)
-        try:
-            return Decimal(source if source is not None else str(node.value))
-        except InvalidOperation as exc:
-            raise ExpressionError("Некорректное число") from exc
-    if isinstance(node, ast.Name) and node.id in variables:
-        return variables[node.id]
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        value = _evaluate_numeric(node.operand, expression, variables)
-        return -value if isinstance(node.op, ast.USub) else value
-    if not isinstance(node, ast.BinOp) or not isinstance(node.op, _ALLOWED_BINARY):
-        raise ExpressionError("Недопустимая операция")
-    left = _evaluate_numeric(node.left, expression, variables)
-    right = _evaluate_numeric(node.right, expression, variables)
-    if isinstance(node.op, ast.Add):
-        return _bounded_decimal(left + right)
-    if isinstance(node.op, ast.Sub):
-        return _bounded_decimal(left - right)
-    if isinstance(node.op, ast.Mult):
-        return _bounded_decimal(left * right)
-    if isinstance(node.op, ast.Div):
-        if right == 0:
-            raise ExpressionError("Деление на ноль")
-        return _bounded_decimal(left / right)
-    if right != right.to_integral_value() or abs(right) > 100:
-        raise ExpressionError("Степень должна быть целой от −100 до 100")
-    try:
-        return _bounded_decimal(left ** int(right))
-    except (InvalidOperation, OverflowError, ZeroDivisionError) as exc:
-        raise ExpressionError("Не удалось вычислить степень") from exc
-
-
 def _scale(values: dict[str, Decimal], factor: Decimal) -> dict[str, Decimal]:
     return {key: value * factor for key, value in values.items()}
 
@@ -323,14 +279,3 @@ def _bounded_decimal(value: Decimal) -> Decimal:
     if not value.is_finite() or abs(value) > Decimal("1e100"):
         raise ExpressionError("Результат слишком велик")
     return value
-
-
-def looks_like_private_query(text: str) -> bool:
-    value = text.strip()
-    if not value or len(value) > _MAX_INPUT:
-        return False
-    return bool(
-        re.search(r"[0-9$()+*/×÷]", value)
-        or re.fullmatch(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9]{1,10}", value)
-        or re.search(r"(?i)\b(плюс|минус|раздел|умнож|plus|minus|divide|multiply)\b", value)
-    )

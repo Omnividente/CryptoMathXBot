@@ -7,6 +7,7 @@
 - цены и изменение за 24 часа из Binance и KuCoin;
 - fallback через CoinGecko и CoinPaprika;
 - курс USD/RUB от ЦБ РФ с краткосрочным stale-кэшем;
+- биржевые котировки в USDT, USDC или FDUSD используются как эквивалент USD и могут отклоняться при depeg;
 - выражения с числами, тикерами, скобками, `+`, `-`, `*`, `/` и степенями;
 - русские математические формулировки и исправление русской раскладки;
 - графики за 1 час, 24 часа и 7 дней;
@@ -17,13 +18,13 @@
 
 ## Требования
 
-- Python 3.10 для Windows launcher; Python 3.10+ при ручной установке;
+- Python 3.14 для Windows launcher и ручной установки;
 - токен Telegram Bot API;
 - сетевой доступ к Telegram и публичным API котировок.
 
 ## Запуск в Windows
 
-1. Установите Python 3.10.
+1. Установите Python 3.14.
 2. Создайте `BOT_TOKEN.txt` в корне проекта и поместите туда только токен бота. Файл уже исключён из Git.
 3. Если нужен inline mode, в `@BotFather` выполните `/setinline`, выберите бота и задайте placeholder, например `BTC или выражение`. Без этого Telegram не отправляет боту `InlineQuery` updates.
 4. Один раз создайте изолированное runtime-окружение:
@@ -31,8 +32,8 @@
 ```powershell
 .\start.ps1 -Install
 ```
-
-`-Install` пересоздаёт только `.runtime-venv`, hash-проверенно обновляет `pip` по `requirements-bootstrap.txt`, затем устанавливает binary wheels с официального PyPI строго по `requirements-windows.txt`. Рабочая `.venv` разработчика не затрагивается.
+`-Install` собирает новое `.runtime-venv.new`, hash-проверенно обновляет `pip` по `requirements-bootstrap.txt`, устанавливает binary wheels с официального PyPI строго по `requirements-windows.txt` и проверяет импорты. Только после успешных проверок новое окружение атомарно заменяет `.runtime-venv`; при ошибке прежнее рабочее окружение сохраняется.
+Если Python 3.14 установлен без регистрации в `py.exe`, задайте полный путь к нему через `CRYPTOMATHX_PYTHON` перед запуском `-Install`.
 
 Последующие запуски не скачивают и не обновляют пакеты:
 
@@ -56,7 +57,7 @@ $env:CRYPTOMATHX_BOT_TOKEN = "<token>"
 ## Ручная установка для разработки
 
 ```powershell
-py -3.10 -m venv .venv
+py -3.14 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --editable ".[dev]"
 .\.venv\Scripts\python.exe -m cryptomathxbot
 ```
@@ -69,8 +70,7 @@ py -3.10 -m venv .venv
 - `/settings` — открыть настройки;
 - `/help` — примеры и правила;
 - `/ping` — проверить состояние процесса.
-
-Обычный текст в группах бот обрабатывает только при упоминании бота или в ответе на его сообщение. Зарегистрированные команды `/price`, `/favorites`, `/settings`, `/help` и `/ping` работают без упоминания; личные команды помечены как приватные. Обычная переписка не отправляется рыночным провайдерам.
+Обычный текст в группах бот обрабатывает только при явном упоминании. Зарегистрированные команды `/price`, `/favorites`, `/settings`, `/help` и `/ping` работают без упоминания и помечены как приватные. Обычная переписка и ответы на сообщения бота не отправляются рыночным провайдерам.
 
 ## Конфигурация
 
@@ -79,6 +79,7 @@ py -3.10 -m venv .venv
 | Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
 | `CRYPTOMATHX_BOT_TOKEN` | — | токен бота; имеет приоритет над файлом |
+| `CRYPTOMATHX_PYTHON` | автоопределение | полный путь к Python 3.14 для Windows launcher |
 | `CRYPTOMATHX_TOKEN_FILE` | `BOT_TOKEN.txt` | путь к файлу токена |
 | `CRYPTOMATHX_DATA_DIR` | `data` | SQLite и lock-файл |
 | `CRYPTOMATHX_LOG_DIR` | `logs` | журналы процесса |
@@ -91,6 +92,7 @@ py -3.10 -m venv .venv
 | `CRYPTOMATHX_RATE_LIMIT_REQUESTS` | `8` | запросов пользователя за окно |
 | `CRYPTOMATHX_RATE_LIMIT_WINDOW` | `30` | окно лимита в секундах |
 | `CRYPTOMATHX_HTTP_TIMEOUT` | `10` | таймаут внешних API в секундах |
+| `CRYPTOMATHX_QUERY_TIMEOUT` | `25` | общий предел обработки запроса в секундах |
 | `CRYPTOMATHX_HTTP_RETRIES` | `2` | повторы временных сбоев |
 | `CRYPTOMATHX_CHART_DPI` | `140` | разрешение PNG-графика |
 
@@ -112,6 +114,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest --cov=cryptomathxbot --cov-report=term-missing
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy
+.\.venv\Scripts\python.exe -m pip_audit -r requirements-windows.txt
 .\.venv\Scripts\python.exe -m pip_audit .
 .\.venv\Scripts\python.exe -m pip_audit -r requirements-bootstrap.txt
 .\.venv\Scripts\python.exe -m piptools compile --generate-hashes --reuse-hashes --strip-extras --no-header --resolver=backtracking --index-url=https://pypi.org/simple --output-file=requirements-windows.txt pyproject.toml
@@ -126,6 +129,8 @@ py -3.10 -m venv .venv
 - Выражения разбираются без `eval`/`exec`; разрешён ограниченный набор AST-узлов.
 - Данные избранного хранятся локально и разделяются по пользователю/чату.
 - Внешние цены являются справочной информацией; при недоступности провайдера бот явно помечает stale-цену.
+
+Production launcher сопровождается для Windows. Ручной POSIX-запуск проверяется CI, но готовая deployment automation для Linux не предоставляется. Legacy chat-scopes из `favorites.json` читаются только как fallback, пока пользователь не сохранит собственное избранное.
 
 Процесс работы с ошибками и независимым AI-аудитом описан в [CONTRIBUTING.md](CONTRIBUTING.md). Политика сообщения уязвимостей — в [SECURITY.md](SECURITY.md).
 
