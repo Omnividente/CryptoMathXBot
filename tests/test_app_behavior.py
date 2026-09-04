@@ -238,8 +238,15 @@ async def test_session_callbacks_reject_parallel_action(monkeypatch: pytest.Monk
         async def answer(self, text: str | None = None, *, show_alert: bool = False) -> None:
             self.answers.append((text, show_alert))
 
-    async def blocked_refresh(update: Any, context: Any, session: Any) -> None:
+    async def blocked_refresh(
+        update: Any,
+        context: Any,
+        session: Any,
+        *,
+        edit_message: Message | None = None,
+    ) -> None:
         nonlocal refresh_calls
+        assert edit_message is not None
         refresh_calls += 1
         entered.set()
         await release.wait()
@@ -745,8 +752,15 @@ async def test_public_group_callback_anchors_delayed_error_before_market_work(
             calls.append((endpoint, api_kwargs))
             return True
 
-    async def failed_refresh(update: Any, context: Any, session: Any) -> str:
+    async def failed_refresh(
+        update: Any,
+        context: Any,
+        session: Any,
+        *,
+        edit_message: Message | None = None,
+    ) -> str:
         assert progress_sent.is_set()
+        assert edit_message is not None
         return "⚠️ Не удалось обновить цены. Попробуйте позже."
 
     monkeypatch.setattr("cryptomathxbot.app._refresh_callback", failed_refresh)
@@ -788,71 +802,172 @@ async def test_public_group_callback_anchors_delayed_error_before_market_work(
 
 
 @pytest.mark.asyncio
-async def test_public_group_callback_removes_progress_after_success(
+@pytest.mark.parametrize(
+    ("callback_data", "expected_edit", "answer_text"),
+    [
+        ("q|token|refresh", "text", "Обновляю…"),
+        ("q|token|chart|1h", "media", "Готовлю график…"),
+    ],
+)
+async def test_public_group_callback_renders_success_in_ephemeral_overlay(
     monkeypatch: pytest.MonkeyPatch,
+    callback_data: str,
+    expected_edit: str,
+    answer_text: str,
 ) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
+    coin = Coin("bitcoin", "BTC", "Bitcoin", 1)
+    quote = Quote(
+        coin,
+        Decimal("100"),
+        Decimal("1"),
+        "Binance",
+        "BTCUSDT",
+        datetime.now(UTC),
+    )
+    calculation = Calculation(
+        expression="BTC",
+        coefficients={"BTC": Decimal(1)},
+        constant_usd=Decimal(0),
+        quotes={"BTC": quote},
+        total_usd=Decimal("100"),
+        usd_rub=Decimal("80"),
+        cbr_date="04.09.2026",
+    )
+    session = SimpleNamespace(
+        token="token",
+        expression="BTC",
+        calculation=calculation,
+        active_timeframe=None,
+    )
+    overlay = Message(
+        message_id=0,
+        date=datetime.now(UTC),
+        chat=Chat(-100, "supergroup"),
+        text="⏳",
+        api_kwargs={"ephemeral_message_id": 96},
+    )
+    edits: list[tuple[str, Message]] = []
+    send_calls: list[dict[str, Any]] = []
 
     class Query:
         id = "callback-20"
-        data = "q|token|refresh"
 
         def __init__(self, message: Message) -> None:
+            self.data = callback_data
             self.message = message
+            self.answers: list[tuple[str | None, bool]] = []
 
         async def answer(self, text: str | None = None, *, show_alert: bool = False) -> None:
-            return None
+            self.answers.append((text, show_alert))
+
+    class Registry:
+        def get(self, token: str, user_id: int) -> Any:
+            assert (token, user_id) == ("token", 42)
+            return session
+
+        def update(self, current: Any, result: Calculation) -> None:
+            assert current is session
+            assert result is calculation
+
+        def set_active_timeframe(self, current: Any, timeframe: str) -> Any:
+            assert current is session
+            assert timeframe == "1h"
+            return session
+
+    class Market:
+        async def chart(self, current_quote: Quote, timeframe: str) -> Chart:
+            assert current_quote is quote
+            assert timeframe == "1h"
+            return Chart("BTC", "1h", ((1_000, 100.0), (2_000, 101.0)), "Binance")
+
+    class Charts:
+        async def render(self, chart: Chart) -> bytes:
+            assert chart.symbol == "BTC"
+            return b"png"
 
     class Bot:
         async def send_message(self, **kwargs: Any) -> Message:
-            calls.append(("send_message", kwargs))
-            return Message(
-                message_id=0,
-                date=datetime.now(UTC),
-                chat=Chat(-100, "supergroup"),
-                text=kwargs["text"],
-                api_kwargs={"ephemeral_message_id": 96},
-            )
+            send_calls.append(kwargs)
+            return overlay
 
         async def do_api_request(self, endpoint: str, api_kwargs: dict[str, Any]) -> bool:
-            calls.append((endpoint, api_kwargs))
-            return True
+            raise AssertionError(f"unexpected raw API call: {endpoint} {api_kwargs}")
 
-    async def successful_refresh(update: Any, context: Any, session: Any) -> None:
-        return None
+    async def refresh_market_data(
+        current: Any,
+        current_services: Any,
+        *,
+        include_chart: bool,
+    ) -> tuple[Calculation, None]:
+        assert current is session
+        assert not include_chart
+        return calculation, None
 
-    monkeypatch.setattr("cryptomathxbot.app._refresh_callback", successful_refresh)
-    message = Message(
+    async def edit_text(
+        bot: Any,
+        message: Message,
+        text: str,
+        reply_markup: Any,
+        *,
+        receiver_user_id: int,
+        callback_query_id: str | None = None,
+    ) -> None:
+        assert receiver_user_id == 42
+        edits.append(("text", message))
+
+    async def edit_media(
+        bot: Any,
+        message: Message,
+        image: Any,
+        caption: str,
+        reply_markup: Any,
+        *,
+        receiver_user_id: int,
+    ) -> None:
+        assert receiver_user_id == 42
+        edits.append(("media", message))
+
+    monkeypatch.setattr("cryptomathxbot.app._refresh_market_data", refresh_market_data)
+    monkeypatch.setattr("cryptomathxbot.app._edit_result_message", edit_text)
+    monkeypatch.setattr("cryptomathxbot.app._edit_result_media", edit_media)
+    source_message = Message(
         message_id=7,
         date=datetime.now(UTC),
         chat=Chat(-100, "supergroup"),
-        text="result",
+        text="public result",
+    )
+    query = Query(source_message)
+    services = SimpleNamespace(
+        registry=Registry(),
+        actor_locks=ActorLocks(),
+        limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
+        query_slots=asyncio.Semaphore(1),
+        settings=SimpleNamespace(query_timeout=1, max_symbols=8),
+        market=Market(),
+        charts=Charts(),
     )
     context = SimpleNamespace(
         bot=Bot(),
-        application=SimpleNamespace(
-            bot_data={
-                "services": SimpleNamespace(
-                    registry=SimpleNamespace(get=lambda token, user_id: object()),
-                    actor_locks=ActorLocks(),
-                    limiter=SimpleNamespace(check=lambda key: SimpleNamespace(allowed=True)),
-                )
-            }
-        ),
+        application=SimpleNamespace(bot_data={"services": services}),
     )
     update = SimpleNamespace(
-        callback_query=Query(message),
+        callback_query=query,
         effective_user=SimpleNamespace(id=42),
-        effective_chat=message.chat,
-        effective_message=message,
+        effective_chat=source_message.chat,
+        effective_message=source_message,
     )
 
     await callback_handler(update, context)
 
-    assert calls[-1] == (
-        "delete_ephemeral_message",
-        {"chat_id": -100, "receiver_user_id": 42, "ephemeral_message_id": 96},
-    )
+    assert query.answers == [(answer_text, False)]
+    assert edits == [(expected_edit, overlay)]
+    assert edits[0][1] is not source_message
+    assert len(send_calls) == 1
+    assert send_calls[0]["api_kwargs"]["ephemeral_message_parameters"] == {
+        "receiver_user_id": 42,
+        "callback_query_id": "callback-20",
+        "replace_callback_query_message": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -886,7 +1001,14 @@ async def test_cancelled_public_group_callback_removes_ephemeral_progress(
             calls.append((endpoint, api_kwargs))
             return True
 
-    async def blocked_refresh(update: Any, context: Any, session: Any) -> None:
+    async def blocked_refresh(
+        update: Any,
+        context: Any,
+        session: Any,
+        *,
+        edit_message: Message | None = None,
+    ) -> None:
+        assert edit_message is not None
         started.set()
         await asyncio.Event().wait()
 
