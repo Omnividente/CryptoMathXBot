@@ -8,7 +8,7 @@ import re
 import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, cast
 
@@ -48,6 +48,7 @@ from telegram.ext import (
 
 from . import __version__
 from .calculator import ExpressionError, ParsedExpression, parse_expression
+from .card import CardAction, CardSigner, read_request
 from .charts import ChartRenderer
 from .config import ConfigurationError, Settings
 from .domain import Calculation, Chart, Coin
@@ -62,7 +63,10 @@ from .ui import (
     format_decimal,
     help_text,
     home_keyboard,
+    navigation_keyboard,
     render_calculation,
+    render_card,
+    request_header,
     result_keyboard,
     settings_keyboard,
     settings_text,
@@ -313,7 +317,7 @@ async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             unknown = [symbol for symbol in raw_symbols if symbol not in resolved]
             if unknown:
                 text = "Не нашёл: <code>" + ", ".join(map(_escape, unknown)) + "</code>"
-                keyboard = None
+                keyboard = navigation_keyboard()
             else:
                 canonical = tuple(dict.fromkeys(resolved[symbol].symbol for symbol in raw_symbols))
                 async with services.preference_locks.get(user.id):
@@ -322,7 +326,7 @@ async def favorites_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 keyboard = settings_keyboard(favorites)
         except MarketUnavailable:
             text = "⚠️ Рыночные источники временно недоступны. Повторите через минуту."
-            keyboard = None
+            keyboard = navigation_keyboard()
 
         if progress is not None:
             await _edit_ephemeral_text(context.bot, progress, user.id, text, keyboard)
@@ -347,6 +351,7 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             update,
             context,
             "Пример: <code>/price 0.5 BTC + 2 ETH</code>",
+            reply_markup=navigation_keyboard(),
             ephemeral=_ephemeral_response_available(update),
         )
         return
@@ -443,7 +448,7 @@ async def _handle_expression(
                         context.bot,
                         target_message,
                         arithmetic_text,
-                        None,
+                        navigation_keyboard(),
                         receiver_user_id=user.id,
                     )
                     progress_message = None
@@ -452,6 +457,7 @@ async def _handle_expression(
                         update,
                         context,
                         arithmetic_text,
+                        reply_markup=navigation_keyboard(),
                         ephemeral=_ephemeral_response_available(update),
                     )
                 return
@@ -460,9 +466,11 @@ async def _handle_expression(
                 _with_query_slot(services, lambda: _calculate(parsed, services)),
                 timeout=services.settings.query_timeout,
             )
-            session = services.registry.create(user.id, expression, calculation)
-            text = render_calculation(calculation)
-            keyboard = result_keyboard(session.token, calculation)
+            token = _card_signer(context).sign(
+                calculation.expression, user.id, _chat_id(update), _thread_id(update),
+            )
+            text = render_card(calculation)
+            keyboard = result_keyboard(token, calculation, persistent=True)
             if target_message is not None:
                 await _edit_result_message(
                     context.bot,
@@ -582,56 +590,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
     message = query.message
-    data = query.data or ""
+    data = query.data if isinstance(query.data, str) else ""
     parts = data.split("|")
 
-    if parts[:2] == ["menu", "home"]:
-        await query.answer()
-        favorites = await _services(context).store.favorites(user.id, _chat_id(update))
-        if _is_group(update) and _ephemeral_message_id(message) is None:
-            await _send_html(
-                update,
-                context,
-                start_text(),
-                reply_markup=home_keyboard(favorites),
-                ephemeral=True,
-            )
-        else:
-            await _edit_result_message(
-                context.bot,
-                message,
-                start_text(),
-                home_keyboard(favorites),
-                receiver_user_id=user.id,
-                callback_query_id=query.id,
-            )
-        return
-
-    if parts[:2] == ["menu", "help"]:
-        await query.answer()
-        favorites = await _services(context).store.favorites(user.id, _chat_id(update))
-        if _is_group(update) and _ephemeral_message_id(message) is None:
-            await _send_html(
-                update,
-                context,
-                help_text(),
-                reply_markup=home_keyboard(favorites),
-                ephemeral=True,
-            )
-        else:
-            await _edit_result_message(
-                context.bot,
-                message,
-                help_text(),
-                home_keyboard(favorites),
-                receiver_user_id=user.id,
-                callback_query_id=query.id,
-            )
-        return
-
-    if parts[:2] == ["menu", "settings"]:
-        await query.answer()
-        await _show_settings(update, context, edit=not _is_group(update))
+    if len(parts) == 2 and parts[0] == "menu":
+        await _menu_callback(update, context, parts[1])
         return
     if len(parts) == 2 and parts[0] == "symbol":
         if _SYMBOL_RE.fullmatch(parts[1]) is None:
@@ -653,32 +616,58 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _favorite_callback(update, context, parts)
         return
 
-    if len(parts) >= 3 and parts[0] == "q":
+    if len(parts) >= 3 and parts[0] in {"q", "r"}:
         services = _services(context)
-        session = services.registry.get(parts[1], user.id)
-        if session is None:
-            await query.answer(
-                "Кнопка устарела или принадлежит другому пользователю.", show_alert=True
+        replay = parts[0] == "r"
+        session: QuerySession | None
+        if replay:
+            try:
+                card_action = CardAction.parse(data)
+            except ValueError:
+                await _answer_callback(query, "Неизвестная кнопка. Выберите «Монеты».", alert=True)
+                return
+            expression = read_request(message.text or message.caption)
+            if expression is None or not _card_signer(context).verify(
+                card_action.token, expression, user.id, message.chat_id, message.message_thread_id,
+            ):
+                await _answer_callback(
+                    query, "Не могу подтвердить карточку для вас. Нажмите «Монеты» и откройте свою.",
+                    alert=True,
+                )
+                return
+            session = QuerySession(
+                token=card_action.token, owner_user_id=user.id, expression=expression,
+                calculation=None, expires_at=float("inf"),
+                active_timeframe=None if card_action.view == "text" else card_action.view,
             )
-            return
-        action = parts[2]
-        is_chart = len(parts) == 4 and action == "chart"
-        if action != "refresh" and not is_chart:
-            await query.answer("Кнопка устарела.", show_alert=True)
-            return
-        if is_chart and parts[3] not in {"1h", "24h", "7d"}:
+            action = "refresh" if card_action.action == "text" else card_action.action
+            is_chart = action == "chart"
+            timeframe = card_action.view
+        else:
+            session = services.registry.get(parts[1], user.id)
+            if session is None:
+                await _recover_legacy_card(update, context, parts[1])
+                return
+            action = parts[2]
+            is_chart = len(parts) == 4 and action == "chart"
+            timeframe = parts[3] if is_chart else "text"
+            if (action != "refresh" or len(parts) != 3) and not is_chart:
+                await query.answer("Кнопка устарела.", show_alert=True)
+                return
+        if is_chart and timeframe not in {"1h", "24h", "7d"}:
             await query.answer("Неизвестный период.", show_alert=True)
             return
-        if is_chart and len(session.calculation.coefficients) != 1:
+        if is_chart and session.calculation is not None and len(session.calculation.coefficients) != 1:
             await query.answer("График доступен для одной монеты.", show_alert=True)
             return
-        decision = services.limiter.check(("query", user.id))
-        if not decision.allowed:
-            await query.answer(
-                f"Слишком часто. Повторите через {max(1, round(decision.retry_after))} с.",
-                show_alert=True,
-            )
-            return
+        if action != "close":
+            decision = services.limiter.check(("query", user.id))
+            if not decision.allowed:
+                await query.answer(
+                    f"Слишком часто. Повторите через {max(1, round(decision.retry_after))} с.",
+                    show_alert=True,
+                )
+                return
 
         actor_lock = services.actor_locks.get(user.id)
         if actor_lock.locked():
@@ -687,6 +676,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await actor_lock.acquire()
         progress_message: Message | None = None
         try:
+            if action == "close":
+                await _answer_callback(query)
+                await _retire_message(context.bot, message, user.id)
+                return
             progress_text = "Обновляю…" if action == "refresh" else "Готовлю график…"
             if _is_group(update) and _ephemeral_message_id(message) is None:
                 progress_message = await _try_send_ephemeral_progress(
@@ -700,7 +693,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                         show_alert=True,
                     )
                     return
-            await query.answer(progress_text)
+            await _answer_callback(query, progress_text)
             target_message = progress_message or message
             if action == "refresh":
                 error_text = await _refresh_callback(
@@ -714,17 +707,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     update,
                     context,
                     session,
-                    parts[3],
+                    timeframe,
                     edit_message=target_message,
                 )
             if error_text is not None:
-                await _edit_error_message(
-                    context.bot,
-                    target_message,
-                    error_text,
-                    getattr(message, "reply_markup", None),
-                    receiver_user_id=user.id,
-                )
+                if replay:
+                    error_text = _card_error_text(session.expression, message, error_text, photo=bool(target_message.photo))
+                try:
+                    await _edit_error_message(
+                        context.bot,
+                        target_message,
+                        error_text,
+                        getattr(message, "reply_markup", None),
+                        receiver_user_id=user.id,
+                    )
+                except (TelegramError, RuntimeError) as exc:
+                    _LOGGER.warning("callback error delivery failed error=%s", type(exc).__name__)
+                    return
             progress_message = None
         finally:
             actor_lock.release()
@@ -733,6 +732,154 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await query.answer("Кнопка устарела.", show_alert=True)
+
+
+def _card_signer(context: ContextTypes.DEFAULT_TYPE) -> CardSigner:
+    return CardSigner(_services(context).settings.token)
+
+
+async def _answer_callback(query: Any, text: str | None = None, *, alert: bool = False) -> None:
+    try:
+        await query.answer(text, show_alert=alert)
+    except TelegramError as exc:
+        _LOGGER.debug("callback acknowledgement failed error=%s", type(exc).__name__)
+
+
+async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if query is None or user is None or not isinstance(query.message, Message):
+        return
+    if action not in {"home", "help", "settings", "input", "close"}:
+        await _answer_callback(query, "Неизвестное действие. Выберите «Монеты».", alert=True)
+        return
+    services = _services(context)
+    lock = services.actor_locks.get(user.id)
+    if lock.locked():
+        await _answer_callback(query, "Предыдущее действие ещё выполняется.", alert=True)
+        return
+    async with lock:
+        message = query.message
+        if action == "close":
+            if _is_group(update) and _ephemeral_message_id(message) is None:
+                await _answer_callback(
+                    query, "Это общая карточка. Откройте личный экран через «Монеты».", alert=True,
+                )
+                return
+            await _answer_callback(query)
+            await _retire_message(context.bot, message, user.id)
+            return
+        await _answer_callback(query)
+        if action == "settings":
+            await _show_settings(update, context, edit=not _is_group(update))
+            return
+        favorites = await services.store.favorites(user.id, _chat_id(update))
+        if action == "help":
+            text = help_text()
+        elif action == "input":
+            text = (
+                "<b>Другая монета или выражение</b>\n\n"
+                "В личном чате просто отправьте <code>ETH</code> или "
+                "<code>0.5 BTC + 2 ETH</code>.\n"
+                "В группе используйте <code>/price ETH</code>.\n\n"
+                "Либо выберите быструю кнопку ниже. /start не нужен."
+            )
+        else:
+            text = start_text()
+        if _is_group(update) and _ephemeral_message_id(message) is None:
+            await _send_html(update, context, text, reply_markup=home_keyboard(favorites), ephemeral=True)
+        else:
+            await _edit_result_message(
+                context.bot, message, text, home_keyboard(favorites),
+                receiver_user_id=user.id, callback_query_id=query.id,
+            )
+
+
+async def _recover_legacy_card(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, token: str,
+) -> None:
+    query = update.callback_query
+    user = update.effective_user
+    if query is None or user is None or not isinstance(query.message, Message):
+        return
+    services = _services(context)
+    if services.registry.contains(token):
+        await _answer_callback(
+            query, "Это карточка другого пользователя. Откройте «Монеты» для своего запроса.",
+            alert=True,
+        )
+        return
+    lock = services.actor_locks.get(user.id)
+    if lock.locked():
+        await _answer_callback(query, "Предыдущее действие ещё выполняется.", alert=True)
+        return
+    async with lock:
+        await _answer_callback(query, "Открываю выбор монеты…")
+        favorites = await services.store.favorites(user.id, _chat_id(update))
+        text = (
+            "<b>Продолжим здесь</b>\n"
+            "У старой карточки больше нет исходного запроса. "
+            "Не буду восстанавливать количество по округлённым ценам.\n\n"
+            "Выберите монету ниже или отправьте новое выражение. /start не нужен."
+        )
+        message = query.message
+        if _is_group(update) and _ephemeral_message_id(message) is None:
+            await _set_message_keyboard(context.bot, message, user.id, navigation_keyboard())
+            await _send_html(update, context, text, reply_markup=home_keyboard(favorites), ephemeral=True)
+        else:
+            await _edit_result_message(
+                context.bot, message, text, home_keyboard(favorites),
+                receiver_user_id=user.id, callback_query_id=query.id,
+            )
+
+
+def _card_error_text(expression: str, source: Message, error: str, *, photo: bool) -> str:
+    base = source.text_html or source.caption_html or request_header(expression)
+    base = base.split("\n\n<b>Статус:</b>", 1)[0]
+    notice = f"\n\n<b>Статус:</b> {_escape(error)} Нажмите «Обновить» или «Монеты»."
+    limit = 1024 if photo else 4096
+    if len((base + notice).encode("utf-16-le")) // 2 > limit:
+        base = request_header(expression) + "Предыдущий результат не обновлён."
+    return base + notice
+
+
+async def _set_message_keyboard(
+    bot: Any, message: Message, receiver_user_id: int, keyboard: Any,
+) -> None:
+    try:
+        ephemeral_id = _ephemeral_message_id(message)
+        if ephemeral_id is None:
+            await message.edit_reply_markup(reply_markup=keyboard)
+        else:
+            photo = bool(message.photo)
+            content = message.caption_html if photo else message.text_html
+            field = "caption" if photo else "text"
+            endpoint = "edit_ephemeral_message_caption" if photo else "edit_ephemeral_message_text"
+            await bot.do_api_request(endpoint, api_kwargs={
+                "chat_id": message.chat_id, "receiver_user_id": receiver_user_id,
+                "ephemeral_message_id": ephemeral_id, field: content or "Карточка закрыта.",
+                "parse_mode": ParseMode.HTML, "reply_markup": keyboard,
+            })
+    except (TelegramError, RuntimeError) as exc:
+        _LOGGER.debug("keyboard cleanup failed error=%s", type(exc).__name__)
+
+
+async def _retire_message(bot: Any, message: Message, receiver_user_id: int) -> None:
+    try:
+        ephemeral_id = _ephemeral_message_id(message)
+        if ephemeral_id is None:
+            await message.delete()
+        else:
+            await bot.do_api_request("delete_ephemeral_message", api_kwargs={
+                "chat_id": message.chat_id, "receiver_user_id": receiver_user_id,
+                "ephemeral_message_id": ephemeral_id,
+            })
+        return
+    except TelegramError as exc:
+        _LOGGER.debug("message cleanup failed error=%s", type(exc).__name__)
+    # Old messages may exceed Telegram's deletion window. Leave passive history,
+    # not a duplicate set of live controls; never delete before a new send succeeds.
+    await _set_message_keyboard(bot, message, receiver_user_id, None)
 
 
 async def _refresh_callback(
@@ -751,6 +898,7 @@ async def _refresh_callback(
         return "⚠️ Сообщение с кнопкой больше недоступно."
     target_message = edit_message or source_message
     services = _services(context)
+    replay = session.calculation is None
     try:
         calculation, chart = await asyncio.wait_for(
             _with_query_slot(
@@ -758,7 +906,7 @@ async def _refresh_callback(
                 lambda: _refresh_market_data(
                     session,
                     services,
-                    include_chart=bool(source_message.photo and session.active_timeframe),
+                    include_chart=bool(session.active_timeframe and (replay or source_message.photo)),
                 ),
             ),
             timeout=services.settings.query_timeout,
@@ -767,6 +915,7 @@ async def _refresh_callback(
             session.token,
             calculation,
             active_timeframe=session.active_timeframe,
+            persistent=replay,
         )
         if chart is not None:
             image = await services.charts.render(chart)
@@ -774,7 +923,7 @@ async def _refresh_callback(
                 context.bot,
                 target_message,
                 image,
-                chart_caption(calculation, chart),
+                render_card(calculation, chart) if replay else chart_caption(calculation, chart),
                 keyboard,
                 receiver_user_id=user.id,
             )
@@ -782,18 +931,19 @@ async def _refresh_callback(
             await _edit_result_message(
                 context.bot,
                 target_message,
-                render_calculation(calculation),
+                render_card(calculation) if replay else render_calculation(calculation),
                 keyboard,
                 receiver_user_id=user.id,
             )
-        services.registry.update(session, calculation)
+        if not replay:
+            services.registry.update(session, calculation)
     except TimeoutError:
         return "⚠️ Обновление заняло слишком много времени. Попробуйте позже."
     except ExpressionError, MarketUnavailable, ValueError:
         return "⚠️ Не удалось обновить цены. Попробуйте позже."
-    except TelegramError as exc:
+    except (TelegramError, RuntimeError) as exc:
         _LOGGER.warning("refresh result delivery failed error=%s", type(exc).__name__)
-        return "⚠️ Не удалось обновить сообщение. Откройте /start и повторите."
+        return "⚠️ Не удалось обновить сообщение. Повторите или выберите «Монеты»."
     return None
 
 
@@ -810,6 +960,8 @@ async def _refresh_market_data(
     calculation = await _calculate(parsed, services, force_refresh=True)
     chart: Chart | None = None
     if include_chart and session.active_timeframe is not None:
+        if len(calculation.coefficients) != 1:
+            raise ExpressionError("График доступен для одной монеты")
         symbol = next(iter(calculation.coefficients))
         chart = await services.market.chart(
             calculation.quotes[symbol],
@@ -838,19 +990,34 @@ async def _chart_callback(
     if timeframe not in {"1h", "24h", "7d"}:
         return "⚠️ Неизвестный период."
     calculation = session.calculation
-    if len(calculation.coefficients) != 1:
-        return "⚠️ График доступен для одной монеты."
-    symbol = next(iter(calculation.coefficients))
-    quote = calculation.quotes[symbol]
     services = _services(context)
+    replay = calculation is None
     try:
-        chart = await asyncio.wait_for(
-            _with_query_slot(services, lambda: services.market.chart(quote, timeframe)),
-            timeout=services.settings.query_timeout,
-        )
+        if calculation is None:
+            calculation, replay_chart = await asyncio.wait_for(
+                _with_query_slot(
+                    services,
+                    lambda: _refresh_market_data(
+                        replace(session, active_timeframe=timeframe), services, include_chart=True,
+                    ),
+                ),
+                timeout=services.settings.query_timeout,
+            )
+            if replay_chart is None:
+                raise MarketUnavailable("chart is absent")
+            chart = replay_chart
+        else:
+            if len(calculation.coefficients) != 1:
+                return "⚠️ График доступен для одной монеты."
+            symbol = next(iter(calculation.coefficients))
+            quote = calculation.quotes[symbol]
+            chart = await asyncio.wait_for(
+                _with_query_slot(services, lambda: services.market.chart(quote, timeframe)),
+                timeout=services.settings.query_timeout,
+            )
         image = await services.charts.render(chart)
-        caption = chart_caption(calculation, chart)
-        keyboard = result_keyboard(session.token, calculation, active_timeframe=timeframe)
+        caption = render_card(calculation, chart) if replay else chart_caption(calculation, chart)
+        keyboard = result_keyboard(session.token, calculation, active_timeframe=timeframe, persistent=replay)
         await _edit_result_media(
             context.bot,
             target_message,
@@ -859,14 +1026,15 @@ async def _chart_callback(
             keyboard,
             receiver_user_id=user.id,
         )
-        services.registry.set_active_timeframe(session, timeframe)
+        if not replay:
+            services.registry.set_active_timeframe(session, timeframe)
     except TimeoutError:
         return "⚠️ График не успел загрузиться. Попробуйте позже."
-    except MarketUnavailable, ValueError:
+    except ExpressionError, MarketUnavailable, ValueError:
         return "⚠️ График сейчас недоступен."
-    except TelegramError as exc:
+    except (TelegramError, RuntimeError) as exc:
         _LOGGER.warning("chart result delivery failed error=%s", type(exc).__name__)
-        return "⚠️ Не удалось показать график. Откройте /start и повторите."
+        return "⚠️ Не удалось показать график. Повторите или выберите «Монеты»."
     return None
 
 
@@ -1305,23 +1473,7 @@ async def _replace_media_with_text(
         except TelegramError:
             _LOGGER.error("could not remove invalid non-ephemeral media replacement")
         raise RuntimeError("Telegram returned incomplete ephemeral message")
-    if ephemeral_message_id is not None:
-        try:
-            await bot.do_api_request(
-                "delete_ephemeral_message",
-                api_kwargs={
-                    "chat_id": message.chat_id,
-                    "receiver_user_id": receiver_user_id,
-                    "ephemeral_message_id": ephemeral_message_id,
-                },
-            )
-        except TelegramError:
-            _LOGGER.debug("could not remove previous ephemeral media result")
-        return
-    try:
-        await message.delete()
-    except TelegramError:
-        _LOGGER.debug("could not remove previous media result")
+    await _retire_message(bot, message, receiver_user_id)
 
 
 async def _edit_result_message(
@@ -1405,10 +1557,7 @@ async def _edit_result_media(
     )
     if sent is None:
         raise RuntimeError("Telegram returned no message")
-    try:
-        await message.delete()
-    except TelegramError:
-        _LOGGER.debug("could not remove text result after chart upload")
+    await _retire_message(bot, message, receiver_user_id)
 
 
 async def _with_query_slot[T](
@@ -1428,7 +1577,7 @@ async def _edit_error_message(
     receiver_user_id: int,
 ) -> None:
     ephemeral_message_id = _ephemeral_message_id(message)
-    if not message.photo or ephemeral_message_id is None:
+    if not message.photo:
         await _edit_result_message(
             bot,
             message,
@@ -1438,17 +1587,20 @@ async def _edit_error_message(
         )
         return
     try:
-        await bot.do_api_request(
-            "edit_ephemeral_message_caption",
-            api_kwargs={
-                "chat_id": message.chat_id,
-                "receiver_user_id": receiver_user_id,
-                "ephemeral_message_id": ephemeral_message_id,
-                "caption": text,
-                "parse_mode": ParseMode.HTML,
-                "reply_markup": reply_markup,
-            },
-        )
+        if ephemeral_message_id is None:
+            await message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        else:
+            await bot.do_api_request(
+                "edit_ephemeral_message_caption",
+                api_kwargs={
+                    "chat_id": message.chat_id,
+                    "receiver_user_id": receiver_user_id,
+                    "ephemeral_message_id": ephemeral_message_id,
+                    "caption": text,
+                    "parse_mode": ParseMode.HTML,
+                    "reply_markup": reply_markup,
+                },
+            )
     except BadRequest as exc:
         if "message is not modified" not in str(exc).casefold():
             raise
@@ -1467,7 +1619,7 @@ async def _deliver_error(
                 context.bot,
                 edit_message,
                 text,
-                getattr(edit_message, "reply_markup", None),
+                getattr(edit_message, "reply_markup", None) or navigation_keyboard(),
                 receiver_user_id=user.id,
             )
         else:
@@ -1475,6 +1627,7 @@ async def _deliver_error(
                 update,
                 context,
                 text,
+                reply_markup=navigation_keyboard(),
                 ephemeral=_ephemeral_response_available(update),
             )
     except (TelegramError, RuntimeError) as exc:
