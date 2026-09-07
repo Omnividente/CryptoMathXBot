@@ -146,9 +146,9 @@ def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any
     application.add_handler(CommandHandler("price", price_command))
     application.add_handler(CommandHandler("favorites", favorites_command))
     application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(CommandHandler("ping", ping_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
-    application.add_handler(InlineQueryHandler(inline_query_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_error_handler(error_handler)
     return application
@@ -801,6 +801,15 @@ async def _recover_legacy_card(
     query = update.callback_query
     user = update.effective_user
     if query is None or user is None or not isinstance(query.message, Message):
+        return
+    markup = query.message.reply_markup
+    if markup is None or not any(
+        isinstance(button.callback_data, str)
+        and button.callback_data == query.data
+        and button.callback_data.startswith(f"q|{token}|")
+        for row in markup.inline_keyboard for button in row
+    ):
+        await _answer_callback(query, "Эта кнопка не относится к карточке. Откройте «Монеты».", alert=True)
         return
     services = _services(context)
     if services.registry.contains(token):
