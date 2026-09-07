@@ -31,10 +31,20 @@ from cryptomathxbot.app import (
     main,
 )
 from cryptomathxbot.calculator import ExpressionError, parse_expression
+from cryptomathxbot.card import CardSigner
 from cryptomathxbot.config import Settings
 from cryptomathxbot.domain import Calculation, Chart, Coin, Quote
 from cryptomathxbot.market import MarketUnavailable
 from cryptomathxbot.session import ActorLocks, QueryRegistry
+
+
+@pytest.fixture(autouse=True)
+def card_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Legacy handler doubles omit credentials; keep the real signing algorithm.
+    monkeypatch.setattr(
+        "cryptomathxbot.app._card_signer",
+        lambda context: CardSigner("unit-test-card-key"),
+    )
 
 
 def settings(tmp_path: Path, *, owner_chat_id: int | None = None) -> Settings:

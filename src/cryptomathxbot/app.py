@@ -467,7 +467,10 @@ async def _handle_expression(
                 timeout=services.settings.query_timeout,
             )
             token = _card_signer(context).sign(
-                calculation.expression, user.id, _chat_id(update), _thread_id(update),
+                calculation.expression,
+                user.id,
+                _chat_id(update),
+                _thread_id(update),
             )
             text = render_card(calculation)
             keyboard = result_keyboard(token, calculation, persistent=True)
@@ -628,16 +631,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 return
             expression = read_request(message.text or message.caption)
             if expression is None or not _card_signer(context).verify(
-                card_action.token, expression, user.id, message.chat_id, message.message_thread_id,
+                card_action.token,
+                expression,
+                user.id,
+                message.chat_id,
+                message.message_thread_id,
             ):
                 await _answer_callback(
-                    query, "Не могу подтвердить карточку для вас. Нажмите «Монеты» и откройте свою.",
+                    query,
+                    "Не могу подтвердить карточку для вас. Нажмите «Монеты» и откройте свою.",
                     alert=True,
                 )
                 return
             session = QuerySession(
-                token=card_action.token, owner_user_id=user.id, expression=expression,
-                calculation=None, expires_at=float("inf"),
+                token=card_action.token,
+                owner_user_id=user.id,
+                expression=expression,
+                calculation=None,
+                expires_at=float("inf"),
                 active_timeframe=None if card_action.view == "text" else card_action.view,
             )
             action = "refresh" if card_action.action == "text" else card_action.action
@@ -657,7 +668,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if is_chart and timeframe not in {"1h", "24h", "7d"}:
             await query.answer("Неизвестный период.", show_alert=True)
             return
-        if is_chart and session.calculation is not None and len(session.calculation.coefficients) != 1:
+        if (
+            is_chart
+            and session.calculation is not None
+            and len(session.calculation.coefficients) != 1
+        ):
             await query.answer("График доступен для одной монеты.", show_alert=True)
             return
         if action != "close":
@@ -712,7 +727,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 )
             if error_text is not None:
                 if replay:
-                    error_text = _card_error_text(session.expression, message, error_text, photo=bool(target_message.photo))
+                    error_text = _card_error_text(
+                        session.expression, message, error_text, photo=bool(target_message.photo)
+                    )
                 try:
                     await _edit_error_message(
                         context.bot,
@@ -763,7 +780,9 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, act
         if action == "close":
             if _is_group(update) and _ephemeral_message_id(message) is None:
                 await _answer_callback(
-                    query, "Это общая карточка. Откройте личный экран через «Монеты».", alert=True,
+                    query,
+                    "Это общая карточка. Откройте личный экран через «Монеты».",
+                    alert=True,
                 )
                 return
             await _answer_callback(query)
@@ -787,16 +806,24 @@ async def _menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, act
         else:
             text = start_text()
         if _is_group(update) and _ephemeral_message_id(message) is None:
-            await _send_html(update, context, text, reply_markup=home_keyboard(favorites), ephemeral=True)
+            await _send_html(
+                update, context, text, reply_markup=home_keyboard(favorites), ephemeral=True
+            )
         else:
             await _edit_result_message(
-                context.bot, message, text, home_keyboard(favorites),
-                receiver_user_id=user.id, callback_query_id=query.id,
+                context.bot,
+                message,
+                text,
+                home_keyboard(favorites),
+                receiver_user_id=user.id,
+                callback_query_id=query.id,
             )
 
 
 async def _recover_legacy_card(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, token: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    token: str,
 ) -> None:
     query = update.callback_query
     user = update.effective_user
@@ -807,14 +834,18 @@ async def _recover_legacy_card(
         isinstance(button.callback_data, str)
         and button.callback_data == query.data
         and button.callback_data.startswith(f"q|{token}|")
-        for row in markup.inline_keyboard for button in row
+        for row in markup.inline_keyboard
+        for button in row
     ):
-        await _answer_callback(query, "Эта кнопка не относится к карточке. Откройте «Монеты».", alert=True)
+        await _answer_callback(
+            query, "Эта кнопка не относится к карточке. Откройте «Монеты».", alert=True
+        )
         return
     services = _services(context)
     if services.registry.contains(token):
         await _answer_callback(
-            query, "Это карточка другого пользователя. Откройте «Монеты» для своего запроса.",
+            query,
+            "Это карточка другого пользователя. Откройте «Монеты» для своего запроса.",
             alert=True,
         )
         return
@@ -834,11 +865,17 @@ async def _recover_legacy_card(
         message = query.message
         if _is_group(update) and _ephemeral_message_id(message) is None:
             await _set_message_keyboard(context.bot, message, user.id, navigation_keyboard())
-            await _send_html(update, context, text, reply_markup=home_keyboard(favorites), ephemeral=True)
+            await _send_html(
+                update, context, text, reply_markup=home_keyboard(favorites), ephemeral=True
+            )
         else:
             await _edit_result_message(
-                context.bot, message, text, home_keyboard(favorites),
-                receiver_user_id=user.id, callback_query_id=query.id,
+                context.bot,
+                message,
+                text,
+                home_keyboard(favorites),
+                receiver_user_id=user.id,
+                callback_query_id=query.id,
             )
 
 
@@ -853,7 +890,10 @@ def _card_error_text(expression: str, source: Message, error: str, *, photo: boo
 
 
 async def _set_message_keyboard(
-    bot: Any, message: Message, receiver_user_id: int, keyboard: Any,
+    bot: Any,
+    message: Message,
+    receiver_user_id: int,
+    keyboard: Any,
 ) -> None:
     try:
         ephemeral_id = _ephemeral_message_id(message)
@@ -864,11 +904,17 @@ async def _set_message_keyboard(
             content = message.caption_html if photo else message.text_html
             field = "caption" if photo else "text"
             endpoint = "edit_ephemeral_message_caption" if photo else "edit_ephemeral_message_text"
-            await bot.do_api_request(endpoint, api_kwargs={
-                "chat_id": message.chat_id, "receiver_user_id": receiver_user_id,
-                "ephemeral_message_id": ephemeral_id, field: content or "Карточка закрыта.",
-                "parse_mode": ParseMode.HTML, "reply_markup": keyboard,
-            })
+            await bot.do_api_request(
+                endpoint,
+                api_kwargs={
+                    "chat_id": message.chat_id,
+                    "receiver_user_id": receiver_user_id,
+                    "ephemeral_message_id": ephemeral_id,
+                    field: content or "Карточка закрыта.",
+                    "parse_mode": ParseMode.HTML,
+                    "reply_markup": keyboard,
+                },
+            )
     except (TelegramError, RuntimeError) as exc:
         _LOGGER.debug("keyboard cleanup failed error=%s", type(exc).__name__)
 
@@ -879,10 +925,14 @@ async def _retire_message(bot: Any, message: Message, receiver_user_id: int) -> 
         if ephemeral_id is None:
             await message.delete()
         else:
-            await bot.do_api_request("delete_ephemeral_message", api_kwargs={
-                "chat_id": message.chat_id, "receiver_user_id": receiver_user_id,
-                "ephemeral_message_id": ephemeral_id,
-            })
+            await bot.do_api_request(
+                "delete_ephemeral_message",
+                api_kwargs={
+                    "chat_id": message.chat_id,
+                    "receiver_user_id": receiver_user_id,
+                    "ephemeral_message_id": ephemeral_id,
+                },
+            )
         return
     except TelegramError as exc:
         _LOGGER.debug("message cleanup failed error=%s", type(exc).__name__)
@@ -915,7 +965,9 @@ async def _refresh_callback(
                 lambda: _refresh_market_data(
                     session,
                     services,
-                    include_chart=bool(session.active_timeframe and (replay or source_message.photo)),
+                    include_chart=bool(
+                        session.active_timeframe and (replay or source_message.photo)
+                    ),
                 ),
             ),
             timeout=services.settings.query_timeout,
@@ -998,16 +1050,18 @@ async def _chart_callback(
     target_message = edit_message or source_message
     if timeframe not in {"1h", "24h", "7d"}:
         return "⚠️ Неизвестный период."
-    calculation = session.calculation
+    cached_calculation = session.calculation
     services = _services(context)
-    replay = calculation is None
+    replay = cached_calculation is None
     try:
-        if calculation is None:
+        if cached_calculation is None:
             calculation, replay_chart = await asyncio.wait_for(
                 _with_query_slot(
                     services,
                     lambda: _refresh_market_data(
-                        replace(session, active_timeframe=timeframe), services, include_chart=True,
+                        replace(session, active_timeframe=timeframe),
+                        services,
+                        include_chart=True,
                     ),
                 ),
                 timeout=services.settings.query_timeout,
@@ -1016,6 +1070,7 @@ async def _chart_callback(
                 raise MarketUnavailable("chart is absent")
             chart = replay_chart
         else:
+            calculation = cached_calculation
             if len(calculation.coefficients) != 1:
                 return "⚠️ График доступен для одной монеты."
             symbol = next(iter(calculation.coefficients))
@@ -1026,7 +1081,9 @@ async def _chart_callback(
             )
         image = await services.charts.render(chart)
         caption = render_card(calculation, chart) if replay else chart_caption(calculation, chart)
-        keyboard = result_keyboard(session.token, calculation, active_timeframe=timeframe, persistent=replay)
+        keyboard = result_keyboard(
+            session.token, calculation, active_timeframe=timeframe, persistent=replay
+        )
         await _edit_result_media(
             context.bot,
             target_message,
@@ -1597,7 +1654,9 @@ async def _edit_error_message(
         return
     try:
         if ephemeral_message_id is None:
-            await message.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            await message.edit_caption(
+                caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+            )
         else:
             await bot.do_api_request(
                 "edit_ephemeral_message_caption",

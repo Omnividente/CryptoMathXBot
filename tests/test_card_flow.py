@@ -22,34 +22,53 @@ KEY = "unit-test-card-key"
 def value(expression: str = "BTC") -> Calculation:
     coin = Coin("bitcoin", "BTC", "Bitcoin", 1)
     quote = Quote(coin, Decimal("100"), Decimal("1"), "Binance", "BTCUSDT", datetime.now(UTC))
-    return Calculation(expression, {"BTC": Decimal(1)}, Decimal(0), {"BTC": quote}, Decimal(100), None, None)
+    return Calculation(
+        expression, {"BTC": Decimal(1)}, Decimal(0), {"BTC": quote}, Decimal(100), None, None
+    )
 
 
 def environment(
-    *, action: str = "refresh", view: str = "text", actor: int = 42,
-    chat_id: int = 42, topic: int | None = None, expression: str = "BTC",
-    signed_actor: int = 42, signed_chat: int = 42, signed_topic: int | None = None,
+    *,
+    action: str = "refresh",
+    view: str = "text",
+    actor: int = 42,
+    chat_id: int = 42,
+    topic: int | None = None,
+    expression: str = "BTC",
+    signed_actor: int = 42,
+    signed_chat: int = 42,
+    signed_topic: int | None = None,
 ) -> tuple[Any, Any, Any]:
     token = CardSigner(KEY).sign("BTC", signed_actor, signed_chat, signed_topic)
     chat = Chat(chat_id, "private" if chat_id > 0 else "supergroup")
     message = Message(
-        message_id=7, date=datetime.now(UTC), chat=chat,
+        message_id=7,
+        date=datetime.now(UTC),
+        chat=chat,
         text=f"Запрос: {expression}\n\nПредыдущий результат: $100",
         reply_markup=result_keyboard(token, value(), persistent=True),
         message_thread_id=topic,
     )
     query = SimpleNamespace(
-        id="callback-test", message=message,
-        data=CardAction(token, action, view).encode(), answer=AsyncMock(),
+        id="callback-test",
+        message=message,
+        data=CardAction(token, action, view).encode(),
+        answer=AsyncMock(),
     )
     overlay = Message(
-        message_id=0, date=datetime.now(UTC), chat=chat, text="progress",
-        message_thread_id=topic, api_kwargs={"ephemeral_message_id": 70},
+        message_id=0,
+        date=datetime.now(UTC),
+        chat=chat,
+        text="progress",
+        message_thread_id=topic,
+        api_kwargs={"ephemeral_message_id": 70},
     )
     btc = Coin("bitcoin", "BTC", "Bitcoin", 1)
     eth = Coin("ethereum", "ETH", "Ethereum", 2)
     quotes = {
-        coin.symbol: Quote(coin, Decimal(100), None, "Binance", coin.symbol + "USDT", datetime.now(UTC))
+        coin.symbol: Quote(
+            coin, Decimal(100), None, "Binance", coin.symbol + "USDT", datetime.now(UTC)
+        )
         for coin in (btc, eth)
     }
 
@@ -58,25 +77,32 @@ def environment(
 
     services = SimpleNamespace(
         settings=SimpleNamespace(token=KEY, max_symbols=8, max_favorites=8, query_timeout=1),
-        registry=QueryRegistry(), actor_locks=ActorLocks(), preference_locks=ActorLocks(),
+        registry=QueryRegistry(),
+        actor_locks=ActorLocks(),
+        preference_locks=ActorLocks(),
         limiter=SimpleNamespace(check=Mock(return_value=SimpleNamespace(allowed=True))),
         notice_limiter=SimpleNamespace(check=Mock(return_value=SimpleNamespace(allowed=True))),
         query_slots=asyncio.Semaphore(1),
         store=SimpleNamespace(favorites=AsyncMock(return_value=("BTC", "ETH"))),
         market=SimpleNamespace(
             resolve_many=AsyncMock(return_value={"BTC": btc, "ETH": eth}),
-            quotes=AsyncMock(return_value=quotes), usd_rub=AsyncMock(return_value=(None, None)),
+            quotes=AsyncMock(return_value=quotes),
+            usd_rub=AsyncMock(return_value=(None, None)),
             chart=AsyncMock(side_effect=chart),
         ),
         charts=SimpleNamespace(render=AsyncMock(return_value=b"png")),
     )
     context = SimpleNamespace(
-        bot=SimpleNamespace(send_message=AsyncMock(return_value=overlay), do_api_request=AsyncMock()),
+        bot=SimpleNamespace(
+            send_message=AsyncMock(return_value=overlay), do_api_request=AsyncMock()
+        ),
         application=SimpleNamespace(bot_data={"services": services}),
     )
     update = SimpleNamespace(
-        callback_query=query, effective_user=SimpleNamespace(id=actor),
-        effective_chat=chat, effective_message=message,
+        callback_query=query,
+        effective_user=SimpleNamespace(id=actor),
+        effective_chat=chat,
+        effective_message=message,
     )
     return update, context, services
 
@@ -84,8 +110,11 @@ def environment(
 def legacy_source(update: Any, token: str) -> None:
     previous = update.callback_query.message
     message = Message(
-        message_id=previous.message_id, date=previous.date, chat=previous.chat,
-        text="Legacy price result", message_thread_id=previous.message_thread_id,
+        message_id=previous.message_id,
+        date=previous.date,
+        chat=previous.chat,
+        text="Legacy price result",
+        message_thread_id=previous.message_thread_id,
         reply_markup=result_keyboard(token, value()),
     )
     update.callback_query.message = message
@@ -93,10 +122,13 @@ def legacy_source(update: Any, token: str) -> None:
 
 
 def test_production_signer_selects_configured_credential() -> None:
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={
-        "services": SimpleNamespace(settings=SimpleNamespace(token="configured-test-key")),
-    }))
-    # Direct import retains the original callable before the autouse fixture.
+    context = SimpleNamespace(
+        application=SimpleNamespace(
+            bot_data={
+                "services": SimpleNamespace(settings=SimpleNamespace(token="configured-test-key")),
+            }
+        )
+    )
     signer = _card_signer(context)
     token = signer.sign("BTC", 42, 42, None)
     assert CardSigner("configured-test-key").verify(token, "BTC", 42, 42, None)
@@ -122,10 +154,18 @@ async def test_refresh_does_not_consult_lost_ram_session(monkeypatch: pytest.Mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["refresh", "close"])
-@pytest.mark.parametrize("changes", [
-    {"actor": 43}, {"chat_id": 43}, {"topic": 17}, {"expression": "ETH"},
-])
-async def test_forged_or_foreign_card_has_no_side_effects(changes: dict[str, Any], action: str) -> None:
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"actor": 43},
+        {"chat_id": 43},
+        {"topic": 17},
+        {"expression": "ETH"},
+    ],
+)
+async def test_forged_or_foreign_card_has_no_side_effects(
+    changes: dict[str, Any], action: str
+) -> None:
     update, context, services = environment(action=action, **changes)
 
     await callback_handler(update, context)
@@ -139,7 +179,9 @@ async def test_forged_or_foreign_card_has_no_side_effects(changes: dict[str, Any
 @pytest.mark.parametrize("action", ["chart", "refresh"])
 @pytest.mark.parametrize("period", ["1h", "24h", "7d"])
 async def test_replayed_chart_preserves_selected_period(
-    monkeypatch: pytest.MonkeyPatch, action: str, period: str,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    period: str,
 ) -> None:
     update, context, services = environment(action=action, view=period)
     edited = AsyncMock()
@@ -150,15 +192,21 @@ async def test_replayed_chart_preserves_selected_period(
     assert services.market.chart.call_args.args[1] == period
     assert edited.await_count == 1
     keyboard = edited.call_args.args[4]
-    actions = [CardAction.parse(button.callback_data) for row in keyboard.inline_keyboard
-               for button in row if button.callback_data and button.callback_data.startswith("r|")]
+    actions = [
+        CardAction.parse(button.callback_data)
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data and button.callback_data.startswith("r|")
+    ]
     assert any(item.action == "refresh" and item.view == period for item in actions)
     assert any(item.action == "text" for item in actions)
 
 
 @pytest.mark.asyncio
 async def test_group_topic_refresh_remains_receiver_scoped_after_ack_failure() -> None:
-    update, context, services = environment(chat_id=-100, signed_chat=-100, topic=17, signed_topic=17)
+    update, context, services = environment(
+        chat_id=-100, signed_chat=-100, topic=17, signed_topic=17
+    )
     update.callback_query.answer.side_effect = BadRequest("query is too old")
 
     await callback_handler(update, context)
@@ -166,7 +214,7 @@ async def test_group_topic_refresh_remains_receiver_scoped_after_ack_failure() -
     sent = context.bot.send_message.call_args.kwargs
     assert sent["message_thread_id"] == 17
     assert sent["api_kwargs"]["ephemeral_message_parameters"]["receiver_user_id"] == 42
-    endpoint, = context.bot.do_api_request.call_args.args
+    (endpoint,) = context.bot.do_api_request.call_args.args
     assert endpoint == "edit_ephemeral_message_text"
     assert context.bot.do_api_request.call_args.kwargs["api_kwargs"]["ephemeral_message_id"] == 70
     assert not services.actor_locks.get(42).locked()
@@ -182,11 +230,15 @@ async def test_next_coin_can_be_selected_without_start(monkeypatch: pytest.Monke
     await callback_handler(update, context)
 
     keyboard = edited.call_args.args[3]
-    assert "symbol|ETH" in [button.callback_data for row in keyboard.inline_keyboard for button in row]
+    assert "symbol|ETH" in [
+        button.callback_data for row in keyboard.inline_keyboard for button in row
+    ]
     update.callback_query.data = "symbol|ETH"
     await callback_handler(update, context)
     assert "Ethereum · ETH" in edited.call_args.args[2]
-    assert "menu|home" in [button.callback_data for row in edited.call_args.args[3].inline_keyboard for button in row]
+    assert "menu|home" in [
+        button.callback_data for row in edited.call_args.args[3].inline_keyboard for button in row
+    ]
     services.store.favorites.assert_awaited_once()
 
 
@@ -201,7 +253,9 @@ async def test_expired_legacy_card_becomes_a_working_menu(monkeypatch: pytest.Mo
     await callback_handler(update, context)
 
     assert "Продолжим здесь" in edited.call_args.args[2]
-    buttons = [button.callback_data for row in edited.call_args.args[3].inline_keyboard for button in row]
+    buttons = [
+        button.callback_data for row in edited.call_args.args[3].inline_keyboard for button in row
+    ]
     assert "symbol|BTC" in buttons
     assert not any(data and data.startswith("q|") for data in buttons)
     services.market.resolve_many.assert_not_awaited()
@@ -225,7 +279,8 @@ async def test_live_foreign_legacy_card_is_not_replaced(monkeypatch: pytest.Monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source_kind", ["signed", "live_legacy"])
 async def test_forged_legacy_callback_cannot_replace_foreign_public_keyboard(
-    monkeypatch: pytest.MonkeyPatch, source_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
 ) -> None:
     update, context, services = environment(chat_id=-100, signed_chat=-100, signed_actor=43)
     if source_kind == "live_legacy":
@@ -246,7 +301,8 @@ async def test_forged_legacy_callback_cannot_replace_foreign_public_keyboard(
 @pytest.mark.asyncio
 async def test_close_failure_strips_keyboard_instead_of_claiming_deletion() -> None:
     message = SimpleNamespace(
-        api_kwargs={}, delete=AsyncMock(side_effect=BadRequest("message can't be deleted")),
+        api_kwargs={},
+        delete=AsyncMock(side_effect=BadRequest("message can't be deleted")),
         edit_reply_markup=AsyncMock(),
     )
 
@@ -256,7 +312,9 @@ async def test_close_failure_strips_keyboard_instead_of_claiming_deletion() -> N
 
 
 @pytest.mark.asyncio
-async def test_market_error_preserves_request_and_replay_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_market_error_preserves_request_and_replay_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     update, context, services = environment()
     services.market.resolve_many.side_effect = MarketUnavailable("offline")
     edited = AsyncMock()
@@ -268,7 +326,38 @@ async def test_market_error_preserves_request_and_replay_controls(monkeypatch: p
     assert read_request(text) == "BTC"
     assert "Предыдущий результат: $100" in text
     assert "Статус:" in text
-    assert edited.call_args.args[3] is update.callback_query.message.reply_markup
+    keyboard = edited.call_args.args[3]
+    retry = next(
+        button.callback_data
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data
+        and button.callback_data.startswith("r|")
+        and CardAction.parse(button.callback_data).action == "refresh"
+    )
+    previous = update.callback_query.message
+    recovered = Message(
+        message_id=previous.message_id,
+        date=previous.date,
+        chat=previous.chat,
+        text=text,
+        reply_markup=keyboard,
+        message_thread_id=previous.message_thread_id,
+    )
+    update.callback_query.message = recovered
+    update.effective_message = recovered
+    update.callback_query.data = retry
+    services.market.resolve_many.side_effect = None
+    refreshed = AsyncMock()
+    monkeypatch.setattr("cryptomathxbot.app._edit_result_message", refreshed)
+
+    await callback_handler(update, context)
+
+    assert any(
+        button.copy_text and button.copy_text.text == "$100"
+        for row in refreshed.call_args.args[3].inline_keyboard
+        for button in row
+    )
 
 
 @pytest.mark.asyncio
@@ -317,13 +406,22 @@ def test_long_photo_caption_keeps_exact_request_and_budget() -> None:
 
 
 def test_repeated_error_notice_does_not_grow_card_indefinitely() -> None:
-    source = Message(message_id=7, date=datetime.now(UTC), chat=Chat(42, "private"),
-                     text="Запрос: BTC\n\nresult")
+    source = Message(
+        message_id=7, date=datetime.now(UTC), chat=Chat(42, "private"), text="Запрос: BTC\n\nresult"
+    )
     text = _card_error_text("BTC", source, "offline", photo=False)
-    assert text.count("<b>Статус:</b>") == 1
-    assert read_request(text) == "BTC"
+    repeated = _card_error_text(
+        "BTC",
+        SimpleNamespace(text_html=text, caption_html=None),
+        "offline",
+        photo=False,
+    )
+    assert repeated == text
+    assert read_request(repeated) == "BTC"
 
 
 def test_every_home_screen_has_an_input_and_close_path() -> None:
-    buttons = [button.callback_data for row in home_keyboard(("BTC",)).inline_keyboard for button in row]
+    buttons = [
+        button.callback_data for row in home_keyboard(("BTC",)).inline_keyboard for button in row
+    ]
     assert {"menu|input", "menu|close"} <= set(buttons)
