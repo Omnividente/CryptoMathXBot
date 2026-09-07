@@ -9,12 +9,8 @@ import pytest
 from telegram import Chat, Message
 from telegram.error import BadRequest
 
-from cryptomathxbot.app import (
-    _card_error_text,
-    _card_signer as configured_card_signer,
-    _retire_message,
-    callback_handler,
-)
+from cryptomathxbot.app import _card_error_text, _retire_message, callback_handler
+from cryptomathxbot.app import _card_signer as configured_card_signer
 from cryptomathxbot.card import CardAction, CardSigner, read_request
 from cryptomathxbot.domain import Calculation, Chart, Coin, Quote
 from cryptomathxbot.market import MarketUnavailable
