@@ -9,8 +9,7 @@ import pytest
 from telegram import Chat, Message
 from telegram.error import BadRequest
 
-from cryptomathxbot.app import _card_error_text, _retire_message, callback_handler
-from cryptomathxbot.app import _card_signer as configured_card_signer
+from cryptomathxbot.app import _card_error_text, _card_signer, _retire_message, callback_handler
 from cryptomathxbot.card import CardAction, CardSigner, read_request
 from cryptomathxbot.domain import Calculation, Chart, Coin, Quote
 from cryptomathxbot.market import MarketUnavailable
@@ -82,11 +81,23 @@ def environment(
     return update, context, services
 
 
+def legacy_source(update: Any, token: str) -> None:
+    previous = update.callback_query.message
+    message = Message(
+        message_id=previous.message_id, date=previous.date, chat=previous.chat,
+        text="Legacy price result", message_thread_id=previous.message_thread_id,
+        reply_markup=result_keyboard(token, value()),
+    )
+    update.callback_query.message = message
+    update.effective_message = message
+
+
 def test_production_signer_selects_configured_credential() -> None:
     context = SimpleNamespace(application=SimpleNamespace(bot_data={
         "services": SimpleNamespace(settings=SimpleNamespace(token="configured-test-key")),
     }))
-    signer = configured_card_signer(context)
+    # Direct import retains the original callable before the autouse fixture.
+    signer = _card_signer(context)
     token = signer.sign("BTC", 42, 42, None)
     assert CardSigner("configured-test-key").verify(token, "BTC", 42, 42, None)
     assert not CardSigner(KEY).verify(token, "BTC", 42, 42, None)
@@ -110,11 +121,12 @@ async def test_refresh_does_not_consult_lost_ram_session(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["refresh", "close"])
 @pytest.mark.parametrize("changes", [
     {"actor": 43}, {"chat_id": 43}, {"topic": 17}, {"expression": "ETH"},
 ])
-async def test_forged_or_foreign_card_has_no_side_effects(changes: dict[str, Any]) -> None:
-    update, context, services = environment(**changes)
+async def test_forged_or_foreign_card_has_no_side_effects(changes: dict[str, Any], action: str) -> None:
+    update, context, services = environment(action=action, **changes)
 
     await callback_handler(update, context)
 
@@ -181,6 +193,7 @@ async def test_next_coin_can_be_selected_without_start(monkeypatch: pytest.Monke
 @pytest.mark.asyncio
 async def test_expired_legacy_card_becomes_a_working_menu(monkeypatch: pytest.MonkeyPatch) -> None:
     update, context, services = environment()
+    legacy_source(update, "expired-token")
     update.callback_query.data = "q|expired-token|refresh"
     edited = AsyncMock()
     monkeypatch.setattr("cryptomathxbot.app._edit_result_message", edited)
@@ -198,6 +211,7 @@ async def test_expired_legacy_card_becomes_a_working_menu(monkeypatch: pytest.Mo
 async def test_live_foreign_legacy_card_is_not_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
     update, context, services = environment()
     session = services.registry.create(43, "BTC", value())
+    legacy_source(update, session.token)
     update.callback_query.data = f"q|{session.token}|refresh"
     edited = AsyncMock()
     monkeypatch.setattr("cryptomathxbot.app._edit_result_message", edited)
@@ -206,6 +220,27 @@ async def test_live_foreign_legacy_card_is_not_replaced(monkeypatch: pytest.Monk
 
     edited.assert_not_awaited()
     assert "другого пользователя" in update.callback_query.answer.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_kind", ["signed", "live_legacy"])
+async def test_forged_legacy_callback_cannot_replace_foreign_public_keyboard(
+    monkeypatch: pytest.MonkeyPatch, source_kind: str,
+) -> None:
+    update, context, services = environment(chat_id=-100, signed_chat=-100, signed_actor=43)
+    if source_kind == "live_legacy":
+        session = services.registry.create(43, "BTC", value())
+        legacy_source(update, session.token)
+    update.callback_query.data = "q|missing-token|refresh"
+    changed = AsyncMock()
+    monkeypatch.setattr("cryptomathxbot.app._set_message_keyboard", changed)
+
+    await callback_handler(update, context)
+
+    changed.assert_not_awaited()
+    services.store.favorites.assert_not_awaited()
+    context.bot.send_message.assert_not_awaited()
+    assert update.callback_query.answer.call_args.kwargs["show_alert"] is True
 
 
 @pytest.mark.asyncio
