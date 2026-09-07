@@ -14,12 +14,15 @@ class QuerySession:
     token: str
     owner_user_id: int
     expression: str
-    calculation: Calculation
+    # None denotes a verified, replayable request with no cached market snapshot.
+    calculation: Calculation | None
     expires_at: float
     active_timeframe: str | None = None
 
 
 class QueryRegistry:
+    """Compatibility cache for legacy q| callbacks; new cards do not depend on it."""
+
     def __init__(self, *, ttl: float = 20 * 60, max_items: int = 1_000) -> None:
         self._ttl = ttl
         self._max_items = max_items
@@ -41,6 +44,10 @@ class QueryRegistry:
         while len(self._sessions) > self._max_items:
             self._sessions.popitem(last=False)
         return session
+
+    def contains(self, token: str) -> bool:
+        self._purge()
+        return token in self._sessions
 
     def get(self, token: str, owner_user_id: int) -> QuerySession | None:
         self._purge()

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC
 from decimal import Decimal
 from html import escape
 
 from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
+from .card import CardAction
 from .domain import Calculation, Chart
 
 _TIMEFRAME_LABELS = {"1h": "1 ч", "24h": "24 ч", "7d": "7 д"}
@@ -104,14 +106,15 @@ def result_keyboard(
     calculation: Calculation,
     *,
     active_timeframe: str | None = None,
+    persistent: bool = False,
 ) -> InlineKeyboardMarkup:
+    refresh = (
+        CardAction(token, "refresh", active_timeframe or "text").encode()
+        if persistent else f"q|{token}|refresh"
+    )
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton(
-                "↻ Обновить",
-                callback_data=f"q|{token}|refresh",
-                style="primary",
-            ),
+            InlineKeyboardButton("↻ Обновить", callback_data=refresh, style="primary"),
             InlineKeyboardButton(
                 "Скопировать итог",
                 copy_text=CopyTextButton(text=f"${format_decimal(calculation.total_usd)}"),
@@ -124,15 +127,32 @@ def result_keyboard(
             label = _TIMEFRAME_LABELS[timeframe]
             if active_timeframe == timeframe:
                 label = f"✓ {label}"
+            data = (
+                CardAction(token, "chart", timeframe).encode()
+                if persistent else f"q|{token}|chart|{timeframe}"
+            )
             chart_row.append(
                 InlineKeyboardButton(
-                    label,
-                    callback_data=f"q|{token}|chart|{timeframe}",
+                    label, callback_data=data,
                     style="success" if active_timeframe == timeframe else None,
                 )
             )
         rows.append(chart_row)
-    rows.append([InlineKeyboardButton("⚙️ Настройки", callback_data="menu|settings")])
+    if persistent and active_timeframe:
+        rows.append([
+            InlineKeyboardButton(
+                "Только цена", callback_data=CardAction(token, "text", "text").encode(),
+            ),
+        ])
+    rows.append([
+        InlineKeyboardButton("← Монеты", callback_data="menu|home"),
+        InlineKeyboardButton("⚙️ Настройки", callback_data="menu|settings"),
+    ])
+    close = CardAction(token, "close", "text").encode() if persistent else "menu|close"
+    rows.append([
+        InlineKeyboardButton("Ввести тикер / выражение", callback_data="menu|input"),
+        InlineKeyboardButton("✕ Закрыть", callback_data=close),
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -148,12 +168,14 @@ def home_keyboard(favorites: tuple[str, ...]) -> InlineKeyboardMarkup:
         ]
         for start in range(0, len(favorites), 3)
     ]
+    rows.append([InlineKeyboardButton("Ввести другой тикер", callback_data="menu|input")])
     rows.append(
         [
             InlineKeyboardButton("⚙️ Настройки", callback_data="menu|settings"),
             InlineKeyboardButton("Помощь", callback_data="menu|help"),
         ]
     )
+    rows.append([InlineKeyboardButton("✕ Закрыть", callback_data="menu|close")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -175,9 +197,10 @@ def settings_keyboard(favorites: tuple[str, ...]) -> InlineKeyboardMarkup:
     rows.append(
         [
             InlineKeyboardButton("Сбросить", callback_data="fav|reset", style="danger"),
-            InlineKeyboardButton("← Назад", callback_data="menu|home"),
+            InlineKeyboardButton("← Монеты", callback_data="menu|home"),
         ]
     )
+    rows.append([InlineKeyboardButton("✕ Закрыть", callback_data="menu|close")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -198,6 +221,9 @@ def help_text() -> str:
         "• <code>0.5 BTC</code>\n"
         "• <code>(1 BTC + 2 ETH) / 3</code>\n"
         "• <code>раздели 3 на 2</code>\n\n"
+        "Другую монету можно выбрать через «← Монеты» под результатом — /start не нужен. "
+        "Новые карточки сохраняют рабочие кнопки после перезапуска. "
+        "«✕ Закрыть» убирает ненужную карточку, если Telegram разрешает удаление.\n\n"
         "В группе упомяните <code>@CryptoMathXBot</code> или используйте приватную "
         "команду <code>/price</code>. Обычная переписка не отправляется рыночным API.\n\n"
         "<b>Команды</b>\n"
@@ -215,7 +241,51 @@ def start_text() -> str:
         "<b>CryptoMathXBot</b>\n"
         "Криптовалютный калькулятор с актуальными ценами, курсом ЦБ и графиками.\n\n"
         "Нажмите монету ниже или введите, например: <code>0.25 BTC + 2 SOL</code>."
+        "\nЧтобы сменить монету, используйте «← Монеты» под результатом."
     )
+
+
+def navigation_keyboard() -> InlineKeyboardMarkup:
+    """Generic navigation, safe to attach even to an expired public result."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Монеты", callback_data="menu|home"),
+         InlineKeyboardButton("Помощь", callback_data="menu|help")],
+        [InlineKeyboardButton("✕ Закрыть", callback_data="menu|close")],
+    ])
+
+
+def request_header(expression: str) -> str:
+    return f"Запрос: <code>{escape(expression)}</code>\n\n"
+
+
+def render_card(calculation: Calculation, chart: Chart | None = None) -> str:
+    """Never truncate the authenticated request to fit a photo caption."""
+    header = request_header(calculation.expression)
+    oldest = min(quote.fetched_at for quote in calculation.quotes.values())
+    freshness = f"<i>Котировки: {oldest.astimezone(UTC):%d.%m.%Y %H:%M:%S} UTC</i>"
+    body = chart_caption(calculation, chart) if chart is not None else render_calculation(calculation)
+    limit = 1024 if chart is not None else 4096
+    full = f"{header}{body}\n{freshness}"
+    # Conservative UTF-16 budget including HTML: never cut an entity or a tag.
+    if len(full.encode("utf-16-le")) // 2 <= limit:
+        return full
+    total = f"<b>Итого: ${format_decimal(calculation.total_usd)}</b>"
+    if calculation.total_rub is not None:
+        total += f" · <b>{format_decimal(calculation.total_rub)} ₽</b>"
+    if calculation.usd_rub is None:
+        rate = "USD/RUB недоступен; итог в рублях не рассчитан."
+    else:
+        rate = f"USD/RUB ЦБ: {format_decimal(calculation.usd_rub)} · {escape(calculation.cbr_date or '—')}"
+    lines = [header + total, f"<i>{rate}</i>", freshness]
+    if any(quote.stale for quote in calculation.quotes.values()):
+        lines.append("<i>⚠️ Сохранённая цена: провайдер недоступен.</i>")
+    sources = ", ".join(dict.fromkeys(quote.source for quote in calculation.quotes.values()))
+    lines.append(f"<i>Цены: {escape(sources)}</i>")
+    if chart is not None:
+        period = _TIMEFRAME_LABELS[chart.timeframe]
+        lines.append(f"<i>График {escape(chart.symbol)} · {period} · {escape(chart.source)}</i>")
+    lines.append("<i>Подробности сокращены; запрос сохранён полностью.</i>")
+    return "\n".join(lines)
 
 
 def _format_change(value: Decimal | None) -> str:
