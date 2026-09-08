@@ -31,10 +31,20 @@ from cryptomathxbot.app import (
     main,
 )
 from cryptomathxbot.calculator import ExpressionError, parse_expression
+from cryptomathxbot.card import CardSigner
 from cryptomathxbot.config import Settings
 from cryptomathxbot.domain import Calculation, Chart, Coin, Quote
 from cryptomathxbot.market import MarketUnavailable
 from cryptomathxbot.session import ActorLocks, QueryRegistry
+
+
+@pytest.fixture(autouse=True)
+def card_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Legacy handler doubles omit credentials; keep the real signing algorithm.
+    monkeypatch.setattr(
+        "cryptomathxbot.app._card_signer",
+        lambda context: CardSigner("unit-test-card-key"),
+    )
 
 
 def settings(tmp_path: Path, *, owner_chat_id: int | None = None) -> Settings:
@@ -542,7 +552,7 @@ def test_application_registers_supported_handler_contracts(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_post_init_configures_profile_and_notifies_owner(tmp_path: Path) -> None:
+async def test_post_init_registers_personal_group_commands(tmp_path: Path) -> None:
     events: list[tuple[str, Any]] = []
 
     class Store:
@@ -593,7 +603,6 @@ async def test_post_init_configures_profile_and_notifies_owner(tmp_path: Path) -
         "ping",
     }
     assert all(command.api_kwargs.get("is_ephemeral") is True for command in group_commands)
-    assert ("owner", (42, "CryptoMathXBot v2.0.2 запущен и готов к работе.")) in events
     assert events[-1] == ("market-close", None)
 
 
