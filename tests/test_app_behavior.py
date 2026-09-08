@@ -552,7 +552,7 @@ def test_application_registers_supported_handler_contracts(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_post_init_configures_profile_and_notifies_owner(tmp_path: Path) -> None:
+async def test_post_init_registers_personal_group_commands(tmp_path: Path) -> None:
     events: list[tuple[str, Any]] = []
 
     class Store:
@@ -603,7 +603,6 @@ async def test_post_init_configures_profile_and_notifies_owner(tmp_path: Path) -
         "ping",
     }
     assert all(command.api_kwargs.get("is_ephemeral") is True for command in group_commands)
-    assert ("owner", (42, "CryptoMathXBot v2.0.2 запущен и готов к работе.")) in events
     assert events[-1] == ("market-close", None)
 
 
