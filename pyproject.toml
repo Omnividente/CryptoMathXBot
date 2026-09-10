@@ -13,7 +13,7 @@ authors = [{ name = "Omnividente" }]
 dependencies = [
   "defusedxml==0.7.1",
   "httpx[http2]==0.28.1",
-  "matplotlib==3.10.9",
+  "matplotlib==3.11.1",
   "python-telegram-bot[http2,rate-limiter]==22.8",
 ]
 
